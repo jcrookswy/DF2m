@@ -255,7 +255,7 @@ void BasicDrawPane::render(wxDC& dc)
     //    mbstowcs(plot7Label, rfText, 64);
     //sprintf_s(cText, "%.1f deg", angle);
     wchar_t plot7Label[64]= _T("RF Power vs Freq, 146.5 MHz, 5 kHz/, 5 dB/");
-        Plot(dc, 27, 140, 906, 250, 250, pRadio->myStatus->RFFreqPlot, -5.0, 3.0, 8, 8, plot7Label, 0);
+        Plot(dc, 27, 140, 906, 256, 256, pRadio->myStatus->RFFreqPlot, -5.0, 3.0, 8, 8, plot7Label, 0);
     //}
     //isPartial = false;
 };
@@ -427,9 +427,9 @@ void MyFrame::OnTimer(wxTimerEvent& event)
     mbstowcs(label, myRadio->dbgText, 16);
     m_textDebug->SetLabelText(label);
 
-    myRadio->UpdatePlot();
-    m_panel1->isPartial = true;
-    m_panel1->audioModified = true;
+    //myRadio->UpdatePlot();
+    //m_panel1->isPartial = true;
+    //m_panel1->audioModified = true;
     m_panel1->RFModified = true;
     m_panel1->Refresh(false);
 

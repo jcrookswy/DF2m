@@ -101,7 +101,7 @@ void InitStatus(RadioStatus* s)
 
 CRadio::CRadio()
 {
-    ippInit();                      // Initialize Intel® IPP library 
+    ippInit();                      // Initialize Intelï¿½ IPP library 
 
     audioInBuf = new Ipp32f[16384];
     audioOutBuf = new Ipp32f[16384];
@@ -119,6 +119,7 @@ CRadio::CRadio()
     connected = false;
 
     NewLOFreq = false;
+    LOfreq = 146.565f;
  
     //Step 1: I/Q data comes in at 96 kHz
     CH1IFData = ippsMalloc_32f(64);
@@ -133,10 +134,11 @@ CRadio::CRadio()
     Ch2IQFiltered = ippsMalloc_32fc(1024);
     Ch1IQFiltered48k = ippsMalloc_32fc(512);
     Ch2IQFiltered48k = ippsMalloc_32fc(512);
-    Ch1IQPhase = ippsMalloc_32f(512);
-    Ch2IQPhase = ippsMalloc_32f(512);
-    Ch1IQFreq = ippsMalloc_32f(512);
-    Ch2IQFreq = ippsMalloc_32f(512);
+    SumIQFiltered = ippsMalloc_32fc(512);
+    IQPhase = ippsMalloc_32f(512);
+    IQFreq = ippsMalloc_32f(512);
+    IQFreqFiltered = ippsMalloc_32f(512);
+
     CH1FIRDL = ippsMalloc_32fc(tapslen);
     CH2FIRDL = ippsMalloc_32fc(tapslen);
     FIRTaps = ippsMalloc_32fc(tapslen);
@@ -167,18 +169,13 @@ CRadio::CRadio()
 
     ippsFIRSRInit_32fc(FIRTaps, 256, ippAlgAuto, pFIRSpec);
 
- 
+    HannWindow = ippsMalloc_32f(512);
+    WindowedData = ippsMalloc_32fc(512);
+    FFTData = ippsMalloc_32fc(512);
+    RawAudio = ippsMalloc_32f(512);
 
-
-
-
-    HannWindow = ippsMalloc_32f(256);
-    WindowedData = ippsMalloc_32fc(256);
-    FFTData = ippsMalloc_32fc(256);
-    RawAudio = ippsMalloc_32f(256);
-
-    MagData = ippsMalloc_32f(256);
-    LogMagData = ippsMalloc_32f(256);
+    MagData = ippsMalloc_32f(1024);
+    LogMagData = ippsMalloc_32f(1024);
 
     TunerPhase = 0.0;
     TunerFreq = 0.0;
@@ -191,7 +188,7 @@ CRadio::CRadio()
 
     // Query to get buffer sizes
     int sizeFFTSpec, sizeFFTInitBuf, sizeFFTWorkBuf;
-    ippsFFTGetSize_C_32fc(8, IPP_FFT_DIV_FWD_BY_N,
+    ippsFFTGetSize_C_32fc(9, IPP_FFT_DIV_FWD_BY_N,
         ippAlgHintAccurate, &sizeFFTSpec, &sizeFFTInitBuf, &sizeFFTWorkBuf);
 
     // Alloc FFT buffers
@@ -200,15 +197,36 @@ CRadio::CRadio()
     pFFTWorkBuf = ippsMalloc_8u(sizeFFTWorkBuf);
 
     // Initialize FFT
-    ippsFFTInit_C_32fc(&pFFTSpec, 8, IPP_FFT_DIV_FWD_BY_N,
+    ippsFFTInit_C_32fc(&pFFTSpec, 9, IPP_FFT_DIV_FWD_BY_N,
         ippAlgHintAccurate, pFFTSpecBuf, pFFTInitBuf);
     if (pFFTInitBuf) ippFree(pFFTInitBuf);
     // *** FFT is good to go ***
 
 	//Build window
-	for (int i = 0; i < 256; i++)
-		HannWindow[i] = 0.5 - 0.5 * cos(IPP_2PI * i / 256);
+	for (int i = 0; i < 512; i++)
+		HannWindow[i] = 0.5 - 0.5 * cos(IPP_2PI * i / 512);
  
+    // Build 256-tap bandpass FIR: 100 Hz to 3 kHz @ 48 kSPS
+    AudioFIRTaps = ippsMalloc_32f(256);
+    AudioFIRDL   = ippsMalloc_32f(256);
+    ippsZero_32f(AudioFIRDL, 256);
+    {
+        Ipp64f* pBPTaps64 = ippsMalloc_64f(256);
+        int bpSz = 0;
+        ippsFIRGenGetBufferSize(256, &bpSz);
+        Ipp8u* pBPBuf = ippsMalloc_8u(bpSz);
+        ippsFIRGenBandpass_64f(100.0 / 48000.0, 3000.0 / 48000.0,
+            pBPTaps64, 256, ippWinHamming, ippTrue, pBPBuf);
+        ippsFree(pBPBuf);
+        ippsConvert_64f32f(pBPTaps64, AudioFIRTaps, 256);
+        ippsFree(pBPTaps64);
+    }
+    int audioFIRSpecSize = 0, audioFIRBufSize = 0;
+    ippsFIRSRGetSize(256, ipp32f, &audioFIRSpecSize, &audioFIRBufSize);
+    pAudioFIRSpec = (IppsFIRSpec_32f*)ippsMalloc_8u(audioFIRSpecSize);
+    pAudioFIRBuf  = ippsMalloc_8u(audioFIRBufSize);
+    ippsFIRSRInit_32f(AudioFIRTaps, 256, ippAlgAuto, pAudioFIRSpec);
+
 	IQWriteAddr = 0; // We want I/Q data in chunks of 256
     IQReadAddr = 0;
     myStatus = new RadioStatus;
@@ -218,7 +236,6 @@ CRadio::CRadio()
 
 CRadio::~CRadio()
 {
-    //To do: delete everything we allocated
     if (connected)
     {
         connected = false;
@@ -234,6 +251,8 @@ CRadio::~CRadio()
     //ippsFree(pDst);
     //ippsFree(taps);
     //ippsFree(pDL);
+
+    //TODO: delete everything we allocated
 
     delete[] audioInBuf;
     delete[] audioOutBuf;
@@ -279,10 +298,19 @@ bool CRadio::ProcessRawToIQ(char * data) // return true if FIR filter ran and ne
             Ch2IQFiltered48k[i] = Ch2IQFiltered[i << 1];
         }
         //Calculate phase so we can FM demod
-        ippsPhase_32fc(Ch1IQFiltered48k, Ch1IQPhase, 512);
-        ippsPhase_32fc(Ch2IQFiltered48k, Ch2IQPhase, 512);
+        ippsAdd_32fc(Ch1IQFiltered48k, Ch2IQFiltered48k, SumIQFiltered, 512);
+        ippsPhase_32fc(SumIQFiltered, IQPhase, 512);
         //FIR filter data
         IQDataWrAdr = 0;
+
+        ippsMul_32f32fc(HannWindow, SumIQFiltered, SumIQFiltered, 512);
+        ippsFFTFwd_CToC_32fc(SumIQFiltered, FFTData, pFFTSpec, pFFTWorkBuf);
+        ippsMagnitude_32fc(FFTData, MagData, 512);
+        ippsLog10_32f_A21(MagData, LogMagData, 512);
+        ippsMulC_32f_I(20.0, LogMagData, 512);
+        memcpy(&myStatus->RFFreqPlot[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
+        memcpy(&myStatus->RFFreqPlot[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+      
         return true;
 
     }
@@ -295,117 +323,19 @@ bool CRadio::ProcessRawToIQ(char * data) // return true if FIR filter ran and ne
 
 void CRadio::DoRXDSP(bool bypassALC) // 2000 bytes = 250 I/Q = 256 audio
 {
-    static Ipp32f LastCh1Phase = 0;
-    static Ipp32f LastCh2Phase = 0;
+    static Ipp32f LastPhase = 0;
     // 1st delta processed from last sample last time
-    Ch1IQFreq[0] = Ch1IQPhase[0] - LastCh1Phase; 
-    LastCh1Phase = Ch1IQPhase[511];
-    Ch2IQFreq[0] = Ch2IQPhase[0] - LastCh2Phase;
-    LastCh2Phase = Ch2IQPhase[511];
+    IQFreq[0] = IQPhase[0] - LastPhase;
+    LastPhase = IQPhase[511];
+ 
+    for (int i = 1; i < 512; i++) IQFreq[i] = IQPhase[i] - IQPhase[i - 1]; // Hopefully compiler makes this faster
+ 
+    ippsFIRSR_32f(IQFreq, RawAudio, 512, pAudioFIRSpec, AudioFIRDL, AudioFIRDL, pAudioFIRBuf);
 
-    for (int i = 1; i < 512; i++) Ch1IQFreq[i] = Ch1IQPhase[i] - Ch1IQPhase[i - 1]; // Hopefully compiler makes this faster
-    for (int i = 1; i < 512; i++) Ch2IQFreq[i] = Ch2IQPhase[i] - Ch2IQPhase[i - 1]; // Hopefully compiler makes this faster
 
-        ippsCopy_32fc(&RawIQData[IQReadAddr], WindowedData, 125);
-
-        IQReadAddr += 125; //50% overlap. More than necessary but simplifies math with Hann window
-        if (IQReadAddr > 15999) IQReadAddr = 0;
-
-        ippsCopy_32fc(&RawIQData[IQReadAddr], &WindowedData[125], 125); //This will be reused next time
-
-        // Tune
-        ippsTone_32fc(TunerData, 250, 1.0, TunerFreq, &TunerPhase, ippAlgHintFast);
-        ippsMul_32fc_I(TunerData, WindowedData, 250); // Tune in place
-
-        // Window data
-        ippsMul_32f32fc_I(HannWindow, WindowedData, 250);
-
-        // DFT
-        ippsDFTFwd_CToC_32fc(WindowedData, DFTData, pDFTSpec, pDFTWorkBuf);
-
-        //Mask - Copy only bins in freq range
-        ippsZero_32fc(IFFTData, 256);
-        for (int i = 1; i < 16; i++) IFFTData[i] = DFTData[i];
-
-        //Inv FFT
-        ippsFFTInv_CToC_32fc_I(IFFTData, pFFTSpec, pFFTWorkBuf);
-        ippsAdd_32fc_I(IFFTData, &IFFTAccum[i * 128], 256);
-        //ippsAdd_32fc_I(&IFFTData[128], &IFFTAccum[i * 128], 128);
-        //ippsAdd_32fc_I(IFFTData, &IFFTAccum[i * 128 + 128], 128);
-    }   //Repeat once
-
-    //For plotting //    
-    ippsMagnitude_32fc(DFTData, MagData, 250);
-    
-    if (ClearMagAccum)
-        MinMaxCounter = 0;
-    ClearMagAccum = false;
-
-	if (MinMaxCounter & 0x03)
-		ippsMinEvery_32f_I(MagData, MagMinAccumData, 250);
-	else
-	{
-		if (MinMaxCounter == 4)
-			ippsCopy_32f(MagMinAccumData, MagAccumData, 250); // just copy to max accum
-		else
-			ippsMaxEvery_32f_I(MagMinAccumData, MagAccumData, 250); // accum max of mins
-
-		ippsCopy_32f(MagData, MagMinAccumData, 250);
-	}
-
-    MinMaxCounter++;
-
-	//Generate 256 samples audio
-    for (int i = 0; i < 256; i++) RawAudio[i] = IFFTAccum[i].re; // Audio in real portion?
-
-    //ALC
-    Ipp32f MaxAudio = 0;
-    Ipp32f FabsRawAudio = 0.0;
-
-    //scale audio
-    for (int i = 0; i < 256; i++) RawAudio[i] *= TunerMag;
-
-    //find abs peak
-    for (int i = 0; i < 256; i++)
-    {
-        FabsRawAudio = fabsf(RawAudio[i]);
-        if (MaxAudio < FabsRawAudio) MaxAudio = FabsRawAudio;
-    }
-    Ipp32f RecipMax = 1.0 / MaxAudio;
-    if ((MaxAudio > 1.0) || bypassALC) {
-        TunerMag /= MaxAudio;
-        Ipp32f recip = 1.0 / MaxAudio;
-        for (int i = 0; i < 256; i++) RawAudio[i] *= recip;
-    }
-    else if (MaxAudio < 0.001) TunerMag *= 2.0;
-    else if (MaxAudio < 0.1) TunerMag *= 1.01;
-    else if (MaxAudio > 0.2) TunerMag *= 0.99;
-
-    //Copy audio to output buf
-//    float * audioOutBufPtr = &audioOutBuf[audioOutWrPtr];
-//    float * RawAudioPointer = RawAudio;
-    memcpy(&audioOutBuf[audioOutWrPtr], RawAudio, 256 * 4);
-    audioOutWrPtr += 256;
-//    for (int i = 0; i < 256; i++)
-//    {
-//        audioOutBuf[audioOutWrPtr++] = RawAudio[i];
-////        audioOutBuf[audioOutWrPtr++] = RawAudio[i];
-////        *(audioOutBufPtr++) = *RawAudio;
-////        *(audioOutBufPtr++) = *(RawAudio++);
-//    }
-//    audioOutWrPtr += 512;
+    memcpy(&audioOutBuf[audioOutWrPtr], RawAudio, 512 * 4);
+    audioOutWrPtr += 512;
     if (audioOutWrPtr > 16383) audioOutWrPtr = 0;
-
-
-    //Let's peek at accumulator
-//    float peekAt[768];
-//    memcpy(peekAt, IFFTAccum, 768 * 4);
-
-
-
-    //Adjust accumulator
-    ippsCopy_32fc(&IFFTAccum[256], IFFTAccum, 128); // Last 128 IFFT bins move to start for next accum
-    ippsZero_32fc(&IFFTAccum[128], 256); // Clear the rest
 
 }
 
@@ -418,10 +348,9 @@ void CRadio::RXDataLoop()
     DWORD bytesToWrite = 4;
     bool bypassALC = true;
     int ALCCounter = 0;
-    for (int i = 0; i < 2; i++)
-        writeData[i] = 'd'; // Let's make 'd' send 256 x 64 bytes ADC data, so this is 84 ms
+    writeData[0] = 'd'; // Let's make 'd' send 256 x 64 bytes ADC data, so this is 42 ms
 
-    WriteFile(hSerial, writeData, 2, &bytesWritten, NULL); // queue up 84 ms initially
+    WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // queue up 84 ms initially
     bool OKtoProcess = false;
     while (RX_MODE == myStatus->mode) // Continue until mode changes
     {
@@ -445,154 +374,12 @@ void CRadio::RXDataLoop()
         else bypassALC = false;
     }
     //Final xfer
-    ReadFile(hSerial, readData, 4, &bytesWritten, NULL); // Read volt / current
-    for (int i = 0; i < 200; i++) // 2000 bytes = 250 I/Q
+    for (int k = 0; k < 64; k++)
     {
-        ReadFile(hSerial, readData, 40, &bytesWritten, NULL);
-        //ProcessIQ(readData);
+        ReadFile(hSerial, readData, 256, &bytesWritten, NULL);
+        if (bytesWritten < 256)
+            int h = 0;
     }
-    ReadFile(hSerial, readData, 4, &bytesWritten, NULL); // Read volt / current
-
-    writeData[0] = 'I';
-    WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // Put device in RX mode
-
-}
-
-void fabsxoveroneplusx(float* inPlaceData)
-{
-    for (int i = 0; i < 256; i++) inPlaceData[i] = inPlaceData[i] / (1.0 + fabs(inPlaceData[i]));
-}
-
-bool DEBUG_BUF_GENERATED = false;
-Ipp32f* pTwoToneAudio;
-void CRadio::Get1280AudioSamples(float gain)
-{
-    if (!DEBUG_BUF_GENERATED)
-    {
-        pTwoToneAudio = ippsMalloc_32f(256);
-        for (int i = 0; i < 256; i++) pTwoToneAudio[i] = 0.707 * cos(IPP_2PI * 3 * i / 256) + 0.707 * cos(IPP_2PI * 8 * i / 256);
-        //for (int i = 0; i < 256; i++) pTwoToneAudio[i] = 1.0 * sin(IPP_2PI * 8 * i / 256) ;
-        DEBUG_BUF_GENERATED = true;
-    }
-    int tempReadPointer = audioInRdPtr;
-    for (int i = 0; i < 1280; i+=256)
-    {
-        ippsCopy_32f(pTwoToneAudio, &resampledAudioIn[i], 256);//debug
-        //ippsCopy_32f(&audioInBuf[tempReadPointer], &resampledAudioIn[i], 256);
-        //dbg ippsMulC_32f(&audioInBuf[tempReadPointer], gain, &resampledAudioIn[i], 256); // Apply gain pre compression
-        //fabsxoveroneplusx(&resampledAudioIn[i]);
-        tempReadPointer = (tempReadPointer + 256) & 16383; // wrap
-
-    }
-    
-}
-void ConjAndFilter(Ipp32fc* pData) // 2048 sample FFT result
-{
-    //Zero out LF samples, raised cosine taper in and out
-    for (int i = 0; i < 8; i++) pData[i] = { 0.0, 0.0 };
-    pData[8].re *= 0.2929;
-    pData[8].im *= 0.2929;
-    pData[10].re *= 1.7071;
-    pData[10].im *= 1.7071;
-
-    pData[111].re *= 1.7071;
-    pData[111].im *= 1.7071;
-    pData[113].re *= 0.2929;
-    pData[113].im *= 0.2929;
-
-    //Filter
-    for (int i = 11; i < 111; i++) // Double because we throw away sideband, except 1st bin -6 dB
-    {
-        pData[i].re *= 2.0;
-        pData[i].im *= 2.0;
-    }
-    for (int i = 114; i < 2048; i++) pData[i] = { 0.0, 0.0 };
- 
-}
-
-int debug_xyz = 0;
-#define DBG_MAX_AMP 50
-void BuildTXPacket(char* wd, Ipp32fc* pIQ)
-{
-    static int lastPhase = 0;
-    static float remainder = 0.0;
-    Ipp32f ampl[8];
-    Ipp32f phase[8];
-    ippsMagnitude_32fc(pIQ, ampl, 8);
-    ippsPhase_32fc(pIQ, phase, 8);
-
-    *(wd++) = 'D';
-    int iAmpl[8];
-    int iPhase[8];
-//    int iPhaseDelta[8];
-    int delta;
-    int amp;
-    for (int i = 0; i < 8; i++)
-    {
-        iPhase[i] = floor(1024.0 * phase[i] / IPP_2PI + 0.5); //round
-        if (i == 0) delta = iPhase[0] - lastPhase;
-        else delta = iPhase[i] - iPhase[i - 1];
-        if (delta < 0) delta += 1024;
-        if (delta > 1023) delta -= 1024; //Possible
-//        iPhaseDelta[i] = delta;
-
-       // if (ampl[i] > 1.0)
-        //amp = floor(ampl[i] * 312.0 + 0.5);
-       // amp = floor(ampl[i] * 200.0 + 0.5);
-        if (ampl[i] > 1.00)
-        {
-            amp = DBG_MAX_AMP;//Clip
-            remainder = 0.5;
-        }
-        else
-        {
-            amp = floor(ampl[i] * DBG_MAX_AMP + remainder + 0.5);
-            //amp = floor(ampl[i] * 101 + 0.5);
-            remainder += ampl[i] * DBG_MAX_AMP - amp; // Carry remainder to approximate extra bits
-        }
-
-//        if (amp > 120) amp = 121; // debug safety
-        if (amp > DBG_MAX_AMP) amp = DBG_MAX_AMP; // debug safety
-        if (amp < 1) amp = 1;
-        //amp = 31;//debug
-
-        *(wd++) = 0x20 + (delta >> 6);
-        *(wd++) = 0x20 + (delta & 0x3F);
-        *(wd++) = 0x20 + (amp >> 6);
-        *(wd++) = 0x20 + (amp & 0x3F);
-    }
-    lastPhase = iPhase[7];
-
-}
-void CRadio::BuildGainRamp(float * ramp, float GainPA, float GainAB, float GainBC)
-{
-    //First half ramps from PA to AB
-    float gain1 = 1.0 / GainPA;
-    float gain2 = 1.0 / GainAB;
-    float gain3 = 1.0 / GainBC;
-    if (GainPA < GainAB) // lower to higher Pre-A should have ramped atten up already. Hold the higher atten
-    {
-        for (int i = 0; i < 512; i++) 
-            ramp[i] = gain2;
-    }
-    else // higher sig to lower. ramp down to lower atten
-    {
-        for (int i = 0; i < 512; i++)
-            ramp[i] = gain1 - (gain1 - gain2) * RaisedCosUpDown[i];
-    }
-
-    if (GainAB > GainBC) // higher to lower. Hold the higher atten
-    {
-        for (int i = 512; i < 1024; i++) 
-            ramp[i] = gain2;
-    }
-    else // lower sig to higher, 2nd half. ramp up to higher atten
-    {
-        for (int i = 512; i < 1024; i++)
-            ramp[i] = gain3 - (gain3 - gain2) * RaisedCosUpDown[i];
-    }
-
-
 }
 
 DWORD GetBytesAvailable(HANDLE hComm) {
@@ -602,382 +389,6 @@ DWORD GetBytesAvailable(HANDLE hComm) {
         return comStat.cbInQue; // Returns bytes in input buffer
     }
     return 0;
-}
-
-
-void CRadio::TXDataLoop()
-{
-    DWORD WriteData4[16];
-    char writeData[64];
-    char readData[64];
-    DWORD bytesWritten = 0;
-    DWORD bytesToWrite = 4;
-    int ADCReadInterval = 16;
-
-    float audioGain = 10.0;
-
-    Ipp32fc OverlapSum[1024];
-    Ipp32f  OverlapSumMag[1024];
-    Ipp32f  AudioMag[128];
-    Ipp32f DebugStuff[1024];
-
-    Ipp32fc * TXIFFTAccum = ippsMalloc_32fc(3072);
-
-    // Query to get buffer sizes
-    int sizeTFFTSpec, sizeTFFTInitBuf, sizeTFFTWorkBuf;
-    ippsFFTGetSize_C_32fc(11, IPP_FFT_DIV_FWD_BY_N,
-        ippAlgHintAccurate, &sizeTFFTSpec, &sizeTFFTInitBuf, &sizeTFFTWorkBuf);
-
-    // Alloc FFT buffers
-    Ipp8u * pTFFTSpecBuf = ippsMalloc_8u(sizeTFFTSpec);
-    Ipp8u* pTFFTInitBuf = ippsMalloc_8u(sizeTFFTInitBuf);
-    Ipp8u* pTFFTWorkBuf = ippsMalloc_8u(sizeTFFTWorkBuf);
-    IppsFFTSpec_C_32fc* pTFFTSpec;
-
-    // Initialize FFT
-    ippsFFTInit_C_32fc(&pTFFTSpec, 11, IPP_FFT_DIV_FWD_BY_N,
-        ippAlgHintAccurate, pTFFTSpecBuf, pTFFTInitBuf);
-    if (pTFFTInitBuf) ippFree(pTFFTInitBuf);
-    // *** FFT is good to go ***
-
-
-    int ADCWaitingCounter = 0;
-
-    Ipp64f time = 80.0; // Initially how many samples extra for resampler
-    Ipp64f factor = LOfreq * 1000.0 / (48.0 * 256); // Resample to the LO frequency / 256
-    int ResampleOutCount = 0;
-
-    audioInRdPtr = audioInWrPtr; // Purge old audio
-    audioInRdPtr = audioInRdPtr & 0xFF00; // round down
-    if (audioInRdPtr >= 16384) audioInRdPtr = 0;
-    float myPeakAudio = 0.1;
-
-    ippsZero_32fc(TXIFFTAccum, 3072); //Re-use IFFT accumulator. This will also be used to raised-cosine taper rising / falling edge of audio
- 
-    PurgeComm(hSerial, PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR);
-
-    writeData[0] = 'T'; // Transmit mode
-    WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-    Sleep(32);//Wait for command / relays
-
-    Ipp32f GainPA = 1.0;
-    Ipp32f GainAB = 1.0;
-    Ipp32f GainBC = 1.0;
-    Ipp32f GainAGC = 1.0;
-    Ipp32f ScaleA = 1.0;
-    Ipp32f ScaleB = 1.0;
-
- //   FILE* f;
- //   fopen_s(&f, "compress.txt", "w");
-
-    while (TX_MODE == myStatus->mode) // Continue until mode changes
-    {
-        //Is there enough audio data to upsample? If so, upsample.
-        int audioSamplecount = audioInWrPtr - audioInRdPtr;
-        if (audioSamplecount < 0) audioSamplecount += 16384;
-
-        if (audioSamplecount >= 1280)
-        {
-            Get1280AudioSamples(audioGain); // Apply gain here, compress later 
-            audioInRdPtr += 1024;
-            if (audioInRdPtr >= 16384) audioInRdPtr -= 16384;
-            int newSampleCount = 0;
-            ippsResamplePolyphase_32f(resampledAudioIn, 1024, &resampledAudioOut[ResampleOutCount],
-                factor, 1.0, &time, &newSampleCount, resample_state);
-            ResampleOutCount += newSampleCount;
-            time -= 1024;
-            // window-overlap-FFT
-            int sendSampleCount = 0;
-            while ((sendSampleCount + 2047) < ResampleOutCount)
-            {
-                Ipp32f* pra = &resampledAudioOut[sendSampleCount];
-                //ippsZero_32fc(TXFFTData, 256); //zero out imaginary
-                for (int s = 0; s < 2048; s++) TXFFTData[s] = { *(pra++), 0.0 };
-                //window
-                ippsMul_32f32fc_I(TXHannWindow, TXFFTData, 2048);
-                //FFT
-                ippsFFTFwd_CToC_32fc_I(TXFFTData, pTFFTSpec, pTFFTWorkBuf);
-                //Conjugate and filter
-                ConjAndFilter(TXFFTData);
-                //Back to time domain
-                ippsFFTInv_CToC_32fc_I(TXFFTData, pTFFTSpec, pTFFTWorkBuf);
-
-                //Now we have 3 IFFTs ready to overlap-add
-                // When we add them, we will likely exceed 1.0 meaning we'll have to scale both of them back.
-                // Once we know how much to scale back, we have enough information to send the last one. 
-                // IFFTAccumRe is 768. This stores the two previous IFFTs. 0-255 working buffer
-
-                //We need to save full previous IFFT (B), and newest half of IFFT before that (A).
-                //Essentially this is the 3rd IFFT (C), used to compute the gain of the 2nd. The 1st was scaled last time.
-                //The 2nd will be scaled this time. Then the new 1/2 of 1st and old 1/2 of 2nd make IQ
-                //memcpy(DebugStuff, TXIFFTAccum, 3072 * 8);
-                //nope
-
-                //Let's find and scale to the peak.
-                //The most recent audio peak will be GainBC. The old audio peak will be in GainAB.
-                //When BC > AB, transition AB down in 2nd half. When AB > BC, transition BC up in 1st half
-                ippsAdd_32fc(&TXIFFTAccum[2048], TXFFTData, OverlapSum, 1024);  // recent B + old C
-                ippsMagnitude_32fc(OverlapSum, OverlapSumMag, 1024);
-                ippsMax_32f(OverlapSumMag, 1024, &GainBC);                   //Gain to compute scale(B)
-                //Let's try forcing a fast attack no decay snap down AGC
-                if (GainBC < 1.0)
-                {
-                    GainBC = 1.0;                             //Only compress, don't expand
-                    GainAGC = 1.0;
-                }
-                else
-                {
-                    if (GainAGC < GainBC) GainAGC = GainBC;//Instant attack
-                    GainBC = GainAGC;
-                }
-
- 
-                //We can reuse OverlapSumMag for RaisedCosUpDown
-                ippsAdd_32fc_I(&TXIFFTAccum[1024], TXIFFTAccum, 1024);      //A + B => output, now AGC
-                BuildGainRamp(OverlapSumMag, GainPA, GainAB, GainBC);
-                ippsMul_32f32fc_I(OverlapSumMag, TXIFFTAccum, 1024);
-
- //               fprintf_s(f, "%.3f, %.3f, %.3f\n", GainPA, GainAB, GainBC);
-
-                //ScaleB = (GainBC > GainAB) ? 1.0f / GainBC : 1.0f / GainAB; //Scale to inverse of larger
-                //ScaleB = 1.0;//debug
-
-               /// ippsMulC_32f_I(ScaleB, (Ipp32f *)&TXIFFTAccum[1024], 4096);     //B is now scaled [128] - [383]
-                                                                            //A was scaled last time
-                //ippsAdd_32fc_I(&TXIFFTAccum[1024], TXIFFTAccum, 1024);            //Scaled A + scaled B => output
-                //memcpy(DebugStuff, IFFTAccum, 256 * 8);
-                //Send 128 samples
-                for (int s = 0; s < 1024; s+=8)
-                {
-                    BuildTXPacket(writeData, &TXIFFTAccum[s]);
-                    WriteFile(hSerial, writeData, 33, &bytesWritten, NULL); 
-                }
-                //Update buffers / variables for next time
-                ippsCopy_32fc(&TXIFFTAccum[2048], TXIFFTAccum, 1024);//late scaled B becomes Late A
-                ippsCopy_32fc(TXFFTData, &TXIFFTAccum[1024], 2048);//unscaled C becomes unscaled B
-                GainPA = GainAB;
-                GainAB = GainBC;
-
-                //Increment sendSampleCount by 128
-                sendSampleCount += 1024;
-
-            } //((sendSampleCount + 255) < ResampleOutCount)
-
-            //Shift remaining resampled audio samples to front of buffer
-            ippsCopy_32f(&resampledAudioOut[sendSampleCount], resampledAudioOut, ResampleOutCount - sendSampleCount);
-            ResampleOutCount -= sendSampleCount;
-
-            myStatus->UpdateText = true;
-            for (int s = 64; s < 192; s++) myStatus->AudioTimePlot[s - 64] = TXFFTData[s].re;
-            //memcpy(myStatus->AudioTimePlot, audioInBuf, 128 * 4);
-            myStatus->UpdateAudio = true;
-
-            //Send ADC request, increment adc waiting counter
-			//if (ADCReadInterval == 0)
-			//{
-			//	ADCReadInterval = 16;
-			//	writeData[0] = 'A'; // Read back ADC 
-			//	WriteFile(hSerial, writeData, 1, &bytesWritten, NULL);
-			//	ADCWaitingCounter++;
-			//	//myStatus->volts = audioInRdPtr * 0.001;//DEBUG
-
-			//}
-			//else ADCReadInterval--;
-
-			//if (ADCWaitingCounter > 16) // Read and process ADC values
-			//{
-			//	ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
-			//	UpdateADCs(readData);
-			//	ADCWaitingCounter--;
-			//}
-
-        } // (audioSamplecount >= 1280)
-        else Sleep(0);
-
-    } // while (TX_MODE == myStatus->mode)
- //   fclose(f);
-
-    //Decay amplitude over 128 final samples
-    //Conveniently, 1st 1/2 of IFFTAccum already has a raised-cosine-taper of what we need to send.
-    for (int s = 0; s < 1024; s += 8)
-    {
-        BuildTXPacket(writeData, &IFFTAccum[s]);
-        WriteFile(hSerial, writeData, 33, &bytesWritten, NULL); 
-    }
-
-    //Dump residual ADC data if any
-    Sleep(16);
-    if (ADCWaitingCounter)
-    {
-        ReadFile(hSerial, readData, 4 * ADCWaitingCounter, &bytesWritten, NULL);
-    }
-
-    //Put back in receive mode
-
-    ippsFree(TXIFFTAccum);
-    ippsFree(pTFFTSpecBuf);
-    ippsFree(pTFFTWorkBuf);
- //   ippsFree(pTFFTSpec);
-
-    writeData[0] = 'I';
-    writeData[1] = 'R';
-    WriteFile(hSerial, writeData, 2, &bytesWritten, NULL); 
-    myStatus->mode = RX_MODE;
-}
-
-
-void CRadio::AntTuneDataLoop()
-{
-    DWORD WriteData4[16];
-    char writeData[64];
-    char readData[64];
-    DWORD bytesWritten = 0;
-    DWORD bytesToWrite = 4;
-//    int RelaySettings = 31; // 31 is bypass
-    Ipp32f H2Window[160];
-    for (int i = 0; i < 160; i++)
-        H2Window[i] = 0.5 - 0.5 * cos(IPP_2PI * i / 160);
-
-    IQWriteAddr = 0;
-    float lastLO = LOfreq;
-    int bestRelaySetting = 0;
-
-	writeData[0] = 'v'; // prep vna
-	WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-	Sleep(16);
-    SetFreq(14.25); //10 kHz steps
-
-    writeData[0] = 'C';
-    writeData[1] = 0x20 ; // Bypass
-    writeData[2] = 0x20 + 0x3B; // FWD power
-    WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-    Sleep(16);
-    double thisFreq;
-    float minRMAG = 1.0;
-
-    for (int ifrq = 0; ifrq < 104; ifrq++)//36 @ bypass, 32@14.25 GHz across settings, 36@best setting
-    {
-        if (ifrq < 36) thisFreq = 14.0 + ifrq * 0.01;
-        else if (ifrq < 68) thisFreq = 14.25;
-        else thisFreq = 14.0 + (ifrq - 68) * 0.01;
-        SetFreq(thisFreq); //10 kHz steps
-
-        writeData[0] = 'v'; // idle vna mode
-        WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-        Sleep(16);
-        ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
-        if (readData[0] != 'R')
-            int g = 0;
-
-        if ((ifrq > 36) && (ifrq < 69)) // All indices where we change relay states
-        {
-            RelaySettings = (ifrq == 68) ? bestRelaySetting : ifrq - 36;
-			writeData[0] = 'C';
-			writeData[1] = 0x20 + RelaySettings;
-			writeData[2] = 0x20 + 0x3B; // FWD power
-			WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-			Sleep(16);
-        }
-
-        writeData[0] = 'V'; // VNA mode. Auto switches to REV pwr
-        writeData[1] = 'b'; // read FWD Each one is 125 I/Q pairs
-        FlushFileBuffers(hSerial);
-        Sleep(50);
-        WriteFile(hSerial, writeData, 2, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-        IQWriteAddr = 0;
-        for (int i = 0; i < 100; i++) // 4000 bytes = 500 I/Q
-        {
-            ReadFile(hSerial, readData, 40, &bytesWritten, NULL);
-            if (bytesWritten < 40)
-                int h = 0;
-            ProcessIQ(readData);
-        }
-
-        //Ipp32fc peekAt2[500];
-        //memcpy(peekAt2, RawIQData, 500 * 8);
-
-        // Tune. Tone is offset by (LOfreq / 16384 Hz) / 46875.0 Hz
-        Ipp32f tuneFreq = LOfreq * 1.0e6 / (16384.0 * 46875.0);
-        TunerPhase = 0.0;
-        ippsTone_32fc(TunerData, 250, 1.0, tuneFreq, &TunerPhase, ippAlgHintFast);
-        ippsMul_32fc_I(TunerData, RawIQData, 250); // Tune in place
-        ippsTone_32fc(TunerData, 250, 1.0, tuneFreq, &TunerPhase, ippAlgHintFast);
-        ippsMul_32fc_I(TunerData, &RawIQData[250], 250); // Tune in place
-
-        Ipp32fc avgFwd, avgRev, S11;
-        ippsMul_32f32fc_I(H2Window, &RawIQData[64], 160);
-        ippsMul_32f32fc_I(H2Window, &RawIQData[314], 160); // Window because of DC feedthru
-        ippsSum_32fc(&RawIQData[64], 160, &avgFwd, ippAlgHintAccurate);
-        ippsSum_32fc(&RawIQData[314], 160, &avgRev, ippAlgHintAccurate);
-        ippsDiv_32fc_A21(&avgRev, &avgFwd, &S11, 1); // S11 = Rev / FWD
-
-        S11.re -= 0.36; // Coarse correction
-        S11.im += 0.05;
-
-        float Rmag = sqrt(S11.re * S11.re + S11.im * S11.im);
-
-        int ifrqx2 = (ifrq % 36) * 2;
-        if (ifrq < 36)
-        {
-            myStatus->SmithChartUntuned[ifrqx2] = S11.re;
-            myStatus->SmithChartUntuned[ifrqx2 + 1] = S11.im;
-            myStatus->SWRUntuned[ifrq] = (1.0 + Rmag) / (1.0 - Rmag);
-        }
-
-        else if(ifrq >= 68)
-        {
-			myStatus->SmithChartTuned[ifrqx2] = S11.re;
-			myStatus->SmithChartTuned[ifrqx2 + 1] = S11.im;
-            myStatus->SWRTuned[ifrq-68] = (1.0 + Rmag) / (1.0 - Rmag);
-        }
-        else
-        {
-            if (Rmag < minRMAG)
-            {
-                minRMAG = Rmag;
-                bestRelaySetting = ifrq - 36;
-            }
-             
-        }
-        myStatus->UpdateVSWR = true;
-   //     if (ifrq == 35)
-   //     {
-   //         //int state = ifrq & 0x07;
-   //         RelaySettings = 0; // Just a bit of inductance
-   //         ////First 4 states are max inductance, cap after. bit 0 set for cap after
-   //         //if      (state == 0) StateVal = 0 + (3 << 1); //max L no cap
-   //         //else if (state == 1) StateVal = 0 + (1 << 1);
-   //         //else if (state == 2) StateVal = 0 + (2 << 1);
-   //         //else if (state == 3) StateVal = 0;             // to max L max C
-   //         //else if (state == 4) StateVal = 1 + (3 << 3); // max C no L
-   //         //else if (state == 5) StateVal = 1 + (1 << 3);
-   //         //else if (state == 6) StateVal = 1 + (2 << 3);
-   //         //else if (state == 7) StateVal = 1;            // to max C max L
-
-			//writeData[0] = 'C';
-   //         writeData[1] = 0x20 + RelaySettings;//both +0x19;//Max cap  0x07; // Max inductance
-			//writeData[2] = 0x20 + 0x3B; // FWD power
-			//WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-			//Sleep(64);
-   //     }
-    }
-
-    RelaySettings = bestRelaySetting;
-    //Cleanup
-    myStatus->UpdateVSWR = true;
-    SetFreq(lastLO);
-
-    SetRXBits();
-
-	Sleep(16);
-    sprintf_s(dbgText, "TUNE %d %.2f", bestRelaySetting, myStatus->SWRTuned[25]);
-
-    //writeData[0] = 'I';
-    //WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // Put device in RX mode
-    writeData[0] = 'R';
-    WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // Put device in RX mode
-    myStatus->mode = 1;
-
 }
 
 int CRadio::DataThread()
@@ -995,23 +406,11 @@ int CRadio::DataThread()
     {
         if (myStatus->mode == IDLE_MODE)
         {
-            char writeData[4];
-            writeData[0] = '0';
-            DWORD bytesWritten = 0;
-            WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // Turn off 24V
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
+             std::this_thread::sleep_for(std::chrono::milliseconds(16));
 		}
         else if (myStatus->mode == RX_MODE) // Receive
         {
             RXDataLoop();
-        }
-        else if (myStatus->mode == TX_MODE) // Receive
-        {
-            TXDataLoop();
-        }
-        else if (myStatus->mode == VNA_MODE) // Tune
-        {
-            AntTuneDataLoop();
         }
 
 	}
@@ -1019,76 +418,27 @@ int CRadio::DataThread()
 	return 0;
 }
 
-int CRadio::UpdatePlot()
-{
-    if (!connected) return 0;
-
-   // return 0;
-
-    float AudioFreqPlot[128];
-//    float AudioTimePlot[128];
-    float RFFreqPlot[256];
-    bool UpdateText;
-    bool UpdateAudio;
-    bool UpdateVSWR;
-    bool UpdateRFPlot;
-    float thisval = 0.0;
-    float maxval = 0.0;
-
-    
-    if (RX_MODE == myStatus->mode)
-    {
-        for (int i = 0; i < 16; i++)
-        {
-            thisval = sqrt(DFTData[i].re * DFTData[i].re + DFTData[i].im * DFTData[i].im) / (TunerMag * 256);
-            if (maxval < thisval) maxval = thisval;
-            myStatus->AudioFreqPlot[i] = thisval;
-        }
-        if (maxval > 0.0) maxval = 1.0 / maxval;
-        for (int i = 0; i < 16; i++) myStatus->AudioFreqPlot[i] *= maxval;
-
-        memcpy(myStatus->AudioTimePlot, RawAudio, 128 * 4); //Other modes take care of this
-    }
-//    Ipp32f* MagData = ippsMalloc_32f(250);
- //   Ipp32f* LogMagData = ippsMalloc_32f(250);
-//    ippsMagnitude_32fc(DFTData, MagData, 250);
-//    ippsMulC_32f_I(0.004, MagData, 250); //arb scale
-
-    ippsLog10_32f_A11(MagAccumData, LogMagData, 250);
-    ClearMagAccum = true;
-
-    //Center the zero
-    memcpy(&myStatus->RFFreqPlot[125], LogMagData, 125 * 4);
-    memcpy(myStatus->RFFreqPlot, &LogMagData[125], 125 * 4);
-
-
-	return 0;
-}
 int CRadio::SetFreq(float freqMHz)
 {
     char writeData[8];
     DWORD bytesWritten = 0;
+    float FirstLO = 144.0f;
+    float SecondLOTarget = freqMHz - FirstLO - 0.024; // 24 kHz offset
+    int Idiv, Fdiv;
+
+    float ratio = FirstLO / SecondLOTarget;
+    Idiv = (int)ratio;
+    Fdiv = (int)roundf((ratio - Idiv) * 64.0f);
+    if (Fdiv >= 64) { Idiv++; Fdiv = 0; }
+
+
+
     LOfreq = freqMHz;
-    m_iFreq = LOfreq * 1000000;
-    writeData[0] = 'F';
-    writeData[1] = 0x20 + ((m_iFreq >> 18) & 0x3F);
-    writeData[2] = 0x20 + ((m_iFreq >> 12) & 0x3F);
-    writeData[3] = 0x20 + ((m_iFreq >> 6) & 0x3F);
-    writeData[4] = 0x20 + ((m_iFreq) & 0x3F);
-    WriteFile(hSerial, writeData, 5, &bytesWritten, NULL); // Set frequency
-    return bytesWritten;
-}
-
-int CRadio::SetRXBits()
-{
-    char writeData[8];
-    DWORD bytesWritten = 0;
-
-    writeData[0] = 'C';
-    writeData[1] = 0x20 + RelaySettings;
-    writeData[2] = 0x20 + 0x3E; // actual input
-
-     WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // Set frequency
+    writeData[0] = 'f';
+    writeData[1] = 0x20 + ((Idiv >> 6) & 0x3F);
+    writeData[2] = 0x20 + (Idiv & 0x3F);
+    writeData[3] = 0x20 + (Fdiv & 0x3F);
+    WriteFile(hSerial, writeData, 4, &bytesWritten, NULL); // Set frequency
     return bytesWritten;
 }
 
@@ -1103,9 +453,8 @@ int CRadio::Connect()
     int port = 3;
     AudioInputChannels = 1;
     fscanf_s(f, "%d", &port);
-    fscanf_s(f, "%d", &AudioInputChannels);
-    fscanf_s(f, "%f", &LOfreq);
-    fscanf_s(f, "%d", &RelaySettings);
+//    fscanf_s(f, "%d", &AudioInputChannels);
+//    fscanf_s(f, "%f", &LOfreq);
     fclose(f);
     
     //debug
@@ -1125,15 +474,8 @@ int CRadio::Connect()
     AudioInputChannels = pai->maxInputChannels;
     AudioOutputChannels = pai->maxOutputChannels;
     char msg[64];
-//    fopen_s(&f, "debug.txt", "w");
-//    fprintf_s(f, "%f %d %d", sr, AudioInputChannels, AudioOutputChannels);
-//    fclose(f);
-
-//    MessageBoxA(NULL, msg, "Audio Capabilities", MB_OK);
-    // Open an audio I/O stream. 
 
     connected = true;
- //   myAThread = std::thread(ProcessPlotThread, 1, this); // Creates a thread executing myFunction with argument 1
     AudioInputChannels = 1;
     err = Pa_OpenDefaultStream(&stream,
         AudioInputChannels,          // 1 input channels 
@@ -1211,21 +553,12 @@ int CRadio::Connect()
     SetFreq(LOfreq); //DEBUG: SET FREQ FROM FILE
     myStatus->RXFreq = LOfreq;
     Sleep(16);
-    SetRXBits();
-    Sleep(16);
 
-    writeData[0] = '2'; // Enable 24 V
-    writeData[1] = 'R'; //Change mode to RX
-//    writeData[2] = 'B';// Read bogus data
-//    writeData[3] = 'B';
-    WriteFile(hSerial, writeData, 2, &bytesWritten, NULL); // Set frequency
-    Sleep(100);
-
-    writeData[0] = 'C';
-    writeData[1] = 0x20 + RelaySettings; 
-    writeData[2] = 0x20 + 0x3B; // FWD power
-    WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // queue up 8 * 250 IQ values
-    Sleep(16);
+    //writeData[0] = 'C';
+    //writeData[1] = 0x20 + RelaySettings; 
+    //writeData[2] = 0x20 + 0x3B; // FWD power
+    //WriteFile(hSerial, writeData, 3, &bytesWritten, NULL); // queue up 8 * 250 IQ values
+    //Sleep(16);
 
     PurgeComm(hSerial, PURGE_TXABORT | PURGE_RXABORT | PURGE_TXCLEAR | PURGE_RXCLEAR);
 

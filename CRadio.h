@@ -70,15 +70,16 @@ public:
 	Ipp32f* CH2IFData;// = ippsMalloc_16s(8192);
 	Ipp32fc* Ch1IQData;// = ippsMalloc_32fc(8192);
 	Ipp32fc* Ch2IQData;// = ippsMalloc_32fc(8192);
+	Ipp32fc* SumIQFiltered;
+	Ipp32fc* FFTData;
 	Ipp32fc* Ch1IQFiltered;// = ippsMalloc_32fc(1024);
 	Ipp32fc* Ch2IQFiltered;// = ippsMalloc_32fc(1024);
 	Ipp32fc* Ch1IQFiltered48k;// = ippsMalloc_32fc(512);
 	Ipp32fc* Ch2IQFiltered48k;// = ippsMalloc_32fc(512);
 
-	Ipp32f* Ch1IQPhase;// = ippsMalloc_32f(1024);
-	Ipp32f* Ch2IQPhase;// = ippsMalloc_32f(1024);
-	Ipp32f* Ch1IQFreq;// = ippsMalloc_32f(512);
-	Ipp32f* Ch2IQFreq;// = ippsMalloc_32f(512);
+	Ipp32f* IQPhase;// = ippsMalloc_32f(1024);
+	Ipp32f* IQFreq;// = ippsMalloc_32f(512);
+	Ipp32f* IQFreqFiltered;// = ippsMalloc_32f(512);
 
 
 	int IQDataWrAdr = 0;
@@ -89,6 +90,11 @@ public:
 
 	IppsFIRSpec_32fc* pFIRSpec;
 	Ipp8u* pFIRBuf;
+
+	Ipp32f* AudioFIRTaps;
+	Ipp32f* AudioFIRDL;
+	IppsFIRSpec_32f* pAudioFIRSpec;
+	Ipp8u* pAudioFIRBuf;
 
 	Ipp32f* MagData ;
 //	Ipp32f* MagMinAccumData;
