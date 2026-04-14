@@ -3,6 +3,9 @@
 //#include "MyProjectBase.h"
 #include "frame1.h"
 #include "CRadio.h"
+#include "WebSocketServer.h"
+
+static WebSocketServer* g_wsServer = nullptr;
 
 class MyApp : public wxApp
 {
@@ -59,6 +62,9 @@ void DrawBearing(wxDC& dc, float angle)
     int ysize = 102;
     wchar_t text[16];
     char cText[16];
+    if (angle < -180.0) angle = 180.0;
+    if (angle > 180.0) angle = 180.0;
+
     sprintf_s(cText, "%.1f deg", angle);
 
     mbstowcs(text, cText, 16);
@@ -129,17 +135,21 @@ void Plot(wxDC& dc, int xofs, int yofs, int xsize, int ysize, int numElements, f
     yofs += 24;
     ysize -= 24;
 
-    if (wfallPix > 0)
-    {
-        dc.SetPen(wxPen(wxColor(32, 32, 32), 0));
-        dc.SetBrush(wxBrush(wxColor(0, 32, 192))); //
-        dc.DrawRectangle(xofs, yofs + ysize - wfallPix + 2, xsize, wfallPix - 4); // Draw outer perimeter
-        ysize -= wfallPix; // Leave room for waterfall if specified
-    }
+    //if (wfallPix > 0)
+    //{
+    //    dc.SetPen(wxPen(wxColor(32, 32, 32), 0));
+    //    dc.SetBrush(wxBrush(wxColor(0, 32, 192))); //
+    //    dc.DrawRectangle(xofs, yofs + ysize - wfallPix + 2, xsize, wfallPix - 4); // Draw outer perimeter
+    //    ysize -= wfallPix; // Leave room for waterfall if specified
+    //}
 
 
     //dc.SetBrush(*wxBLACK_BRUSH); // black filling
-    dc.SetPen(wxPen(wxColor(255, 255, 255), 1)); // 1-pixels-thick pink outline
+
+    dc.SetBrush(wxBrush(wxColor(64, 64, 64))); //
+    dc.DrawRectangle(xofs + 2.5 * xsize / ygrat, yofs, 3 * xsize / ygrat, ysize); // To do: shade center 3 for filtered region
+
+    dc.SetPen(wxPen(wxColor(255, 255, 255), 1)); // 1-pixels-thick outline
     //dc.DrawRectangle(xofs, yofs, xsize , ysize ); // Draw outer perimeter
     for (int i = 0; i <= hgrat; i++)
     {
@@ -243,7 +253,7 @@ void BasicDrawPane::render(wxDC& dc)
         Plot(dc, 288, 72, 260, 228, 128, pRadio->myStatus->AudioTimePlot, -1.0, 1.0, 4, 5, plot4Label);
      }*/
 
-    DrawBearing(dc, -27.0);
+    DrawBearing(dc, pRadio->myStatus->angleOfArrival);
 
     //if (RFModified)
     //{
@@ -254,8 +264,11 @@ void BasicDrawPane::render(wxDC& dc)
     
     //    mbstowcs(plot7Label, rfText, 64);
     //sprintf_s(cText, "%.1f deg", angle);
-    wchar_t plot7Label[64]= _T("RF Power vs Freq, 146.5 MHz, 5 kHz/, 5 dB/");
-        Plot(dc, 27, 140, 906, 256, 256, pRadio->myStatus->RFFreqPlot, -5.0, 3.0, 8, 8, plot7Label, 0);
+    char plot7Text[64];
+    sprintf_s(plot7Text, "RF Power vs Freq, %.3f MHz, 6 kHz/, 10 dB/", pRadio->myStatus->RXFreq);
+    wchar_t plot7Label[64];
+    mbstowcs(plot7Label, plot7Text, 64);
+        Plot2(dc, 27, 140, 906, 256, 256, pRadio->myStatus->RFFreqPlot, -90.0, -10.0, 8, 8, plot7Label, pRadio->myStatus->RFFreqPlot2);
     //}
     //isPartial = false;
 };
@@ -284,6 +297,9 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     this->SetTitle(_("AOA DF 2m"));
 
     myRadio = new CRadio();//Do this after frame exists
+    g_wsServer = new WebSocketServer(myRadio);
+    g_wsServer->Start();
+    myRadio->m_wsServer = g_wsServer;
 
     wxBoxSizer* bSizer1;
     bSizer1 = new wxBoxSizer(wxHORIZONTAL);
@@ -327,7 +343,8 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     gSizer2 = new wxGridSizer(2, 2, 0, 0);
  
 
-    m_textCtrl1 = new wxTextCtrl(this, wxID_ANY, _("146.565"), wxDefaultPosition, wxSize(105,40), 0);
+    m_textCtrl1 = new wxTextCtrl(this, wxID_ANY, _("146.565"), wxDefaultPosition, wxSize(105, 40), 0);
+    //m_textCtrl1 = new wxTextCtrl(this, wxID_ANY, _("162.55"), wxDefaultPosition, wxSize(105, 40), 0);
     m_textCtrl1->SetFont(bf);
     gSizer2->Add(m_textCtrl1, 0, wxALL, 5);
 
@@ -365,6 +382,11 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     m_textDebug->SetFont(bf);
     gSizer1->Add(m_textDebug, 0, wxALL, 2);
 
+    m_LO2HS = new wxCheckBox(this, wxID_ANY, _("2nd LO HS"), wxDefaultPosition, wxDefaultSize, 0);
+    m_LO2HS->SetFont(bf);
+    m_LO2HS->SetForegroundColour(wxColor(255, 255, 128));
+    gSizer1->Add(m_LO2HS, 0, wxALL, 5);
+
     bSizer1->Add(gSizer1, 1, wxALIGN_TOP, 5);
 
 
@@ -377,6 +399,7 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     // Connect Events
 
 
+    m_LO2HS->Connect(wxEVT_CHECKBOX, wxCommandEventHandler(MyFrame::OnLO2HSChanged), NULL, this);
     m_button1->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B1Click), NULL, this);
     m_button2->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B2Click), NULL, this);
     m_button6->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B6Click), NULL, this);
@@ -449,6 +472,11 @@ void MyFrame::B1Click(wxCommandEvent& event) // CONNECT
 void MyFrame::B2Click(wxCommandEvent& event) // CONNECT
 {
 
+}
+
+void MyFrame::OnLO2HSChanged(wxCommandEvent& event)
+{
+    myRadio->m_2ndLOisHS = m_LO2HS->IsChecked();
 }
 
 void MyFrame::B6Click(wxCommandEvent& event) // MHz

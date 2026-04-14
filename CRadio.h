@@ -19,14 +19,19 @@
 #define VNA_MODE 3
 
 class MyFrame;
+class WebSocketServer;
 
 struct RadioStatus {
 	float RXFreq;
+	float phaseDelta;
 	float LO1Freq; // Typ 144 MHz, 1.2 MHz multiples
 	float LO2Freq; // Typ 500 kHz to 3 MHz, LO1Freq / ( Idiv + Fdiv / 64)
 	float ErrorFreq; // Residual error, typ < 2 kHz
 	int mode;		//0 for standby, 1 for receive?
 	float RFFreqPlot[256];
+	float RFFreqPlot2[256];
+	float antennaSpacing;   // meters
+	float angleOfArrival;   // degrees
 };
 
 class CRadio
@@ -46,7 +51,7 @@ public:
 	void DoRXDSP(bool bypassALC); // Change 4, 6-bit values into a float
 	int SetFreq(float freqMHz);
 
-	std::thread myAThread;
+//	std::thread myAThread;
 	std::thread myDThread;
 
 	int AudioInputChannels;
@@ -55,6 +60,7 @@ public:
 	MyFrame* theFrame;
 	RadioStatus* myStatus;
 	HANDLE hSerial;
+	bool m_2ndLOisHS;
 
 	Ipp32f* audioInBuf;
 	Ipp32f* audioOutBuf;
@@ -128,6 +134,12 @@ public:
 	Ipp32fc* IFFTAccum;// = new Ipp32fc[16000];
 	Ipp32f* RawAudio;
 
+	// DC-removal IIR: 4th-order Chebyshev Type-I high-pass @ 4 kHz / 96 kSPS (2 biquad stages), one state per IF channel
+	// Uses 64f state to keep poles stable near z=1 (32f rounding causes instability at low cutoff/fs ratio)
+	IppsIIRState_64f* pDCRemCH1;
+	IppsIIRState_64f* pDCRemCH2;
+	Ipp8u* pDCRemBufCH1;
+	Ipp8u* pDCRemBufCH2;
 
 	int IQWriteAddr;
 	int IQReadAddr;
@@ -139,6 +151,6 @@ public:
 	char dbgText[16];
 	bool audioOutStarted;
 
-
+	WebSocketServer* m_wsServer = nullptr;
 };
 
