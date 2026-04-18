@@ -106,7 +106,9 @@ void InitStatus(RadioStatus* s)
 CRadio::CRadio()
 {
     ippInit();                      // Initialize Intel� IPP library 
+    m_1stLOisHS = false;
     m_2ndLOisHS = false;
+    m_currentLO1 = 1440;
 
     audioInBuf = new Ipp32f[16384];
     audioOutBuf = new Ipp32f[16384];
@@ -268,8 +270,8 @@ CRadio::~CRadio()
     {
         myStatus->mode = IDLE_MODE;
         connected = false;
-//        myAThread.join();
         myDThread.join();
+        Sleep(16);
         Pa_StopStream(stream);
     }
 
@@ -397,7 +399,7 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
             phaseProd.im += Ch2IQFiltered48k[i].im * Ch1IQFiltered48k[i].re - Ch2IQFiltered48k[i].re * Ch1IQFiltered48k[i].im;
         }
         myStatus->phaseDelta = atan2f(phaseProd.im, phaseProd.re) * (180.0f / IPP_PI);
-        if (m_2ndLOisHS) myStatus->phaseDelta *= -1.0;
+        if (m_2ndLOisHS ^ m_1stLOisHS) myStatus->phaseDelta *= -1.0;
 
         // Now compute angle of arrival from phase difference, based on antenna spacing
 		float sinArg = myStatus->phaseDelta / (360.0f * myStatus->antennaSpacing);
@@ -411,8 +413,14 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
         for (int k = 0; k < 512; k++) if (MagData[k] == 0.0) MagData[k] = 0.000000001;
         ippsLog10_32f_A21(MagData, LogMagData, 512);
         ippsMulC_32f_I(20.0, LogMagData, 512);
-        memcpy(&myStatus->RFFreqPlot[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
-        memcpy(&myStatus->RFFreqPlot[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+        // High-side mixing inverts the spectrum; mirror both halves when active.
+        if (m_2ndLOisHS ^ m_1stLOisHS) {
+            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot[0],   128); // reversed +freqs → left
+            ippsFlip_32f(&LogMagData[384], &myStatus->RFFreqPlot[128], 128); // reversed -freqs → right
+        } else {
+            memcpy(&myStatus->RFFreqPlot[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
+            memcpy(&myStatus->RFFreqPlot[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+        }
 
         ippsMul_32f32fc(HannWindow, Ch2IQData, WindowedData, 512);
         ippsFFTFwd_CToC_32fc(WindowedData, FFTData, pFFTSpec, pFFTWorkBuf);
@@ -420,8 +428,14 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
         for (int k = 0; k < 512; k++) if (MagData[k] == 0.0) MagData[k] = 0.000000001;
         ippsLog10_32f_A21(MagData, LogMagData, 512);
         ippsMulC_32f_I(20.0, LogMagData, 512);
-        memcpy(&myStatus->RFFreqPlot2[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
-        memcpy(&myStatus->RFFreqPlot2[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+
+        if (m_2ndLOisHS ^ m_1stLOisHS) {
+            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot2[0],   128);
+            ippsFlip_32f(&LogMagData[384], &myStatus->RFFreqPlot2[128], 128);
+        } else {
+            memcpy(&myStatus->RFFreqPlot2[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
+            memcpy(&myStatus->RFFreqPlot2[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+        }
       
         return true;
 
@@ -500,12 +514,12 @@ void CRadio::RXDataLoop()
         else bypassALC = false;
     }
     //Final xfer
-    for (int k = 0; k < 64; k++)
+ /*   for (int k = 0; k < 64; k++)
     {
         ReadFile(hSerial, readData, 256, &bytesWritten, NULL);
         if (bytesWritten < 256)
             int h = 0;
-    }
+    }*/
 }
 
 DWORD GetBytesAvailable(HANDLE hComm) {
@@ -548,9 +562,16 @@ int CRadio::SetFreq(float freqMHz)
 {
     char writeData[8];
     DWORD bytesWritten = 0;
-    float FirstLO = 144.0f;
-    float SecondLOTarget = (m_2ndLOisHS)? (freqMHz - FirstLO - 0.01425) : (freqMHz - FirstLO + 0.01425); // 14.25 kHz offset
     int Idiv, Fdiv;
+    //float FirstLO = 144.0f;
+    float freqMHzx10d12 = (int)freqMHz * 10.0 / 12.0 ;
+    freqMHzx10d12 = (m_1stLOisHS)? freqMHzx10d12 + 2.0f : freqMHzx10d12 - 2.0f;
+ 
+    int FirstLO1M2Steps = (int)floor(freqMHzx10d12 + 0.5);
+    float FirstLO = FirstLO1M2Steps * 1.2f;
+    FirstLO1M2Steps *= 12;
+    float SecondLOTarget = fabs(freqMHz - FirstLO);
+    SecondLOTarget = (m_2ndLOisHS)? (SecondLOTarget - 0.01425) : (SecondLOTarget + 0.01425); // 14.25 kHz offset
 
     float ratio = FirstLO / SecondLOTarget;
     Idiv = (int)ratio;
@@ -560,12 +581,25 @@ int CRadio::SetFreq(float freqMHz)
 
 //    Idiv += 1;
     LOfreq = freqMHz;
-    writeData[0] = 'f';
+    writeData[0] = 'f';  
     writeData[1] = 0x20 + ((Idiv >> 6) & 0x3F);
     writeData[2] = 0x20 + (Idiv & 0x3F);
     writeData[3] = 0x20 + (Fdiv & 0x3F);
     WriteFile(hSerial, writeData, 4, &bytesWritten, NULL); // Set frequency
     Sleep(32);
+
+    if (m_currentLO1 != FirstLO1M2Steps)
+    {
+        m_currentLO1 = FirstLO1M2Steps;
+        writeData[0] = 'm';
+        writeData[1] = 0x20 + ((FirstLO1M2Steps >> 6) & 0x3F);
+        writeData[2] = 0x20 + (FirstLO1M2Steps & 0x3F);
+        writeData[3] = 0x20 + (Fdiv & 0x3F);
+        WriteFile(hSerial, writeData, 4, &bytesWritten, NULL); // Set frequency
+        Sleep(32); 
+    }
+
+//    TunerFreq = (m_1stLOisHS) ? -19.0 / 128 : 19.0 / 128;
     return bytesWritten;
 }
 

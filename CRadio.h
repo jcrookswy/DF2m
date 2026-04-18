@@ -60,7 +60,9 @@ public:
 	MyFrame* theFrame;
 	RadioStatus* myStatus;
 	HANDLE hSerial;
+	bool m_1stLOisHS;
 	bool m_2ndLOisHS;
+	int m_currentLO1;
 
 	Ipp32f* audioInBuf;
 	Ipp32f* audioOutBuf;

@@ -382,6 +382,11 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     m_textDebug->SetFont(bf);
     gSizer1->Add(m_textDebug, 0, wxALL, 2);
 
+    m_LO1HS = new wxCheckBox(this, wxID_ANY, _("1st LO HS"), wxDefaultPosition, wxDefaultSize, 0);
+    m_LO1HS->SetFont(bf);
+    m_LO1HS->SetForegroundColour(wxColor(255, 255, 128));
+    gSizer1->Add(m_LO1HS, 0, wxALL, 5);
+
     m_LO2HS = new wxCheckBox(this, wxID_ANY, _("2nd LO HS"), wxDefaultPosition, wxDefaultSize, 0);
     m_LO2HS->SetFont(bf);
     m_LO2HS->SetForegroundColour(wxColor(255, 255, 128));
@@ -399,10 +404,13 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     // Connect Events
 
 
+    m_LO1HS->Connect(wxEVT_CHECKBOX, wxCommandEventHandler(MyFrame::OnLO1HSChanged), NULL, this);
     m_LO2HS->Connect(wxEVT_CHECKBOX, wxCommandEventHandler(MyFrame::OnLO2HSChanged), NULL, this);
     m_button1->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B1Click), NULL, this);
     m_button2->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B2Click), NULL, this);
     m_button6->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B6Click), NULL, this);
+    m_button7->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B7Click), NULL, this);
+    m_button8->Connect(wxEVT_COMMAND_BUTTON_CLICKED, wxCommandEventHandler(MyFrame::B8Click), NULL, this);
     m_timer.SetOwner(this, TIMER_ID);
     m_timer.Connect(wxEVT_TIMER, wxTimerEventHandler(MyFrame::OnTimer));
 }
@@ -474,9 +482,34 @@ void MyFrame::B2Click(wxCommandEvent& event) // CONNECT
 
 }
 
+void MyFrame::OnLO1HSChanged(wxCommandEvent& event)
+{
+    myRadio->m_1stLOisHS = m_LO1HS->IsChecked();
+    myRadio->NewLOFreq = true;
+}
+
 void MyFrame::OnLO2HSChanged(wxCommandEvent& event)
 {
     myRadio->m_2ndLOisHS = m_LO2HS->IsChecked();
+    myRadio->NewLOFreq = true;
+}
+
+void MyFrame::B7Click(wxCommandEvent& event) // -
+{
+    myRadio->LOfreq -= 0.005f;
+    myRadio->NewLOFreq = true;
+    char buf[32];
+    sprintf_s(buf, "%.3f", myRadio->LOfreq);
+    m_textCtrl1->SetValue(wxString::FromAscii(buf));
+}
+
+void MyFrame::B8Click(wxCommandEvent& event) // +
+{
+    myRadio->LOfreq += 0.005f;
+    myRadio->NewLOFreq = true;
+    char buf[32];
+    sprintf_s(buf, "%.3f", myRadio->LOfreq);
+    m_textCtrl1->SetValue(wxString::FromAscii(buf));
 }
 
 void MyFrame::B6Click(wxCommandEvent& event) // MHz

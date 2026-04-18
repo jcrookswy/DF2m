@@ -116,6 +116,7 @@ protected:
     wxTextCtrl* m_textCtrl1;
     wxTextCtrl* m_textCtrl2;
     wxTextCtrl* m_textDebug;
+    wxCheckBox* m_LO1HS;
     wxCheckBox* m_LO2HS;
 
 
@@ -138,9 +139,12 @@ public:
 //    void B4Click(wxCommandEvent& event);
 //    void B5Click(wxCommandEvent& event);
     void B6Click(wxCommandEvent& event);
+    void B7Click(wxCommandEvent& event);
+    void B8Click(wxCommandEvent& event);
     void OnPaint(wxPaintEvent& event);
     void OnTimer(wxTimerEvent& event);
     void UpdateDebugText(char* text);
+    void OnLO1HSChanged(wxCommandEvent& event);
     void OnLO2HSChanged(wxCommandEvent& event);
 
     CRadio* myRadio;
