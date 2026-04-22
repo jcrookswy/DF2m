@@ -1,3 +1,22 @@
+///////////////////////////////////////////////////////////////////////////////
+// AOA DF 2m — Angle-of-Arrival Direction Finder for 2m Amateur Radio Band
+// File:    CRadio.h
+// Author:  Justin Crooks
+// Copyright (C) 2025  Justin Crooks
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+///////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "portaudio.h"
 #include <complex>
@@ -20,6 +39,7 @@
 
 class MyFrame;
 class WebSocketServer;
+class CCompass;
 
 struct RadioStatus {
 	float RXFreq;
@@ -28,11 +48,23 @@ struct RadioStatus {
 	float LO2Freq; // Typ 500 kHz to 3 MHz, LO1Freq / ( Idiv + Fdiv / 64)
 	float ErrorFreq; // Residual error, typ < 2 kHz
 	int mode;		//0 for standby, 1 for receive?
-	float RFFreqPlot[256];
-	float RFFreqPlot2[256];
+	float RFFreqPlot[128];
+	float RFFreqPlot2[128];
 	float antennaSpacing;   // meters
 	float angleOfArrival;   // degrees
 };
+
+// (x, y, z) coordinates near the extremities of each sensor.
+struct CompassExtrema {
+	int XMin[3];
+	int XMax[3];
+	int YMin[3];
+	int YMax[3];
+	int ZMin[3];
+	int ZMax[3];
+};
+
+
 
 class CRadio
 {
@@ -40,6 +72,8 @@ public:
 	CRadio();
 	~CRadio() ;
 	int Connect();
+	void LoadConfig();
+	void SaveConfig();
 	bool connected;
 	int UpdatePlot();
 	int DataThread();
@@ -54,15 +88,36 @@ public:
 //	std::thread myAThread;
 	std::thread myDThread;
 
-	int AudioInputChannels;
+	int AudioInputChannels; 
 	int AudioOutputChannels;
+
+	int mMagField[3];
+	void ProcessMagField(char* CompassData); // 12 bytes to 3-D vector
+	CCompass* mCompass;
+	CompassExtrema mCompassExtrema;
+	float ofsMagField[3];
+	float corrMagField[3];
+	float mPhaseOffset;
+	float mCH2Scale;
+	float mCompassPosition[3];
+
+	float mLatitude;
+	float mLongitude;
+	float mPitch;
+	float mRoll;
+	float mYaw;
+	float mDeclination;
 
 	MyFrame* theFrame;
 	RadioStatus* myStatus;
 	HANDLE hSerial;
+	int m_comPort;
 	bool m_1stLOisHS;
 	bool m_2ndLOisHS;
+	bool m_showAoA;
 	int m_currentLO1;
+	bool mNewCompassRequest;
+	bool mNewCompassCalRequest;
 
 	Ipp32f* audioInBuf;
 	Ipp32f* audioOutBuf;

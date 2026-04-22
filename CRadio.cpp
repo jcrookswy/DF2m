@@ -1,3 +1,22 @@
+///////////////////////////////////////////////////////////////////////////////
+// AOA DF 2m — Angle-of-Arrival Direction Finder for 2m Amateur Radio Band
+// File:    CRadio.cpp
+// Author:  Justin Crooks
+// Copyright (C) 2025  Justin Crooks
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+///////////////////////////////////////////////////////////////////////////////
 #include "WebSocketServer.h"
 #include "CRadio.h"
 #include <thread>
@@ -6,7 +25,7 @@
 #include <ipp.h>
 #include <chrono>
 #include <iostream>
-
+#include "CCompass.h"
 
 void ProcessDataThread(int id, void* p) {
     CRadio* pRadio = (CRadio*)p;
@@ -96,8 +115,8 @@ PaError err;
 void InitStatus(RadioStatus* s)
 {
     s->RXFreq = 146.56500;
-    for (int i = 0; i < 256; i++) s->RFFreqPlot[i] = -20.0;
-    for (int i = 0; i < 256; i++) s->RFFreqPlot2[i] = -20.0;
+    for (int i = 0; i < 128; i++) s->RFFreqPlot[i] = -20.0;
+    for (int i = 0; i < 128; i++) s->RFFreqPlot2[i] = -20.0;
     s->antennaSpacing = 0.5f;
     s->angleOfArrival = 0.0f;
  
@@ -106,9 +125,17 @@ void InitStatus(RadioStatus* s)
 CRadio::CRadio()
 {
     ippInit();                      // Initialize Intel� IPP library 
+    m_comPort = 3;
     m_1stLOisHS = false;
     m_2ndLOisHS = false;
+    m_showAoA = false;
     m_currentLO1 = 1440;
+    mLatitude = 0.0f;
+    mLongitude = 0.0f;
+    mPitch = 0.0f;
+    mRoll = 0.0f;
+    mYaw = 0.0f;
+    mDeclination = 0.0f;
 
     audioInBuf = new Ipp32f[16384];
     audioOutBuf = new Ipp32f[16384];
@@ -271,8 +298,9 @@ CRadio::~CRadio()
         myStatus->mode = IDLE_MODE;
         connected = false;
         myDThread.join();
-        Sleep(16);
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
         Pa_StopStream(stream);
+        delete mCompass;
     }
 
     //ippsFIRFree_64f(pState);
@@ -339,7 +367,7 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
 		valCH2 = (*(data++)) << 2;
 		valCH2 |= (*(data++)) << 8;
 		CH1IFData[i] = (valCH1 - 8192) * 0.000128;
-		CH2IFData[i] = (valCH2 - 8192) * 0.000128; // Zero pad missing samples - no simultaneous sampling
+        CH2IFData[i] = (valCH2 - 8192) * 0.000128; // Zero pad missing samples - no simultaneous sampling
 	}
 
     // Remove DC / long-term drift with the 1 kHz high-pass IIR (state preserved across calls)
@@ -355,7 +383,11 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
     //Convert to IQ
     Ipp32f LastTunerPhase = TunerPhase;
     ippsTone_32fc(TunerData1, 64, 1.0, TunerFreq, &TunerPhase, ippAlgHintFast);
-    LastTunerPhase += IPP_PI * TunerFreq * 0.5; // Channel 2 starts with 1/4 tuner freq offset from staggered sampling and downsampling. Also let's avoid accumulating error.
+    if(m_2ndLOisHS) LastTunerPhase -= IPP_PI * TunerFreq * 0.5; // Channel 2 starts with 1/4 tuner freq offset from staggered sampling and downsampling. Also let's avoid accumulating error.
+    else LastTunerPhase += IPP_PI * TunerFreq * 0.5;
+    if (LastTunerPhase >= IPP_2PI) LastTunerPhase -= IPP_2PI;
+    if (LastTunerPhase < 0) LastTunerPhase += IPP_2PI;
+
     ippsTone_32fc(TunerData2, 64, 1.0, TunerFreq, &LastTunerPhase, ippAlgHintFast);
     ippsMul_32f32fc(CH1IFData, TunerData1, &Ch1IQData[IQDataWrAdr], 64);
     ippsMul_32f32fc(CH2IFData, TunerData2, &Ch2IQData[IQDataWrAdr], 64);
@@ -407,19 +439,20 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
 		else if (sinArg < -1.0f) sinArg = -1.0f;
 		myStatus->angleOfArrival = asinf(sinArg) * (180.0f / IPP_PI);
 
-		ippsMul_32f32fc(HannWindow, Ch1IQData, Ch1IQData, 512);
-        ippsFFTFwd_CToC_32fc(Ch1IQData, FFTData, pFFTSpec, pFFTWorkBuf);
+		ippsMul_32f32fc(HannWindow, Ch1IQData, WindowedData, 512);
+        ippsFFTFwd_CToC_32fc(WindowedData, FFTData, pFFTSpec, pFFTWorkBuf);
         ippsMagnitude_32fc(FFTData, MagData, 512);
         for (int k = 0; k < 512; k++) if (MagData[k] == 0.0) MagData[k] = 0.000000001;
         ippsLog10_32f_A21(MagData, LogMagData, 512);
         ippsMulC_32f_I(20.0, LogMagData, 512);
         // High-side mixing inverts the spectrum; mirror both halves when active.
+        // Center 128 bins of 512-pt FFT: 64 from each side of DC (±12 kHz @ 96 kSPS).
         if (m_2ndLOisHS ^ m_1stLOisHS) {
-            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot[0],   128); // reversed +freqs → left
-            ippsFlip_32f(&LogMagData[384], &myStatus->RFFreqPlot[128], 128); // reversed -freqs → right
+            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot[0],  64); // reversed +freqs → left
+            ippsFlip_32f(&LogMagData[448], &myStatus->RFFreqPlot[64], 64); // reversed -freqs → right
         } else {
-            memcpy(&myStatus->RFFreqPlot[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
-            memcpy(&myStatus->RFFreqPlot[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+            memcpy(&myStatus->RFFreqPlot[0],  &LogMagData[448], 64 * sizeof(Ipp32f)); // 64 negative-freq bins nearest DC
+            memcpy(&myStatus->RFFreqPlot[64], &LogMagData[0],   64 * sizeof(Ipp32f)); // DC + 63 positive-freq bins
         }
 
         ippsMul_32f32fc(HannWindow, Ch2IQData, WindowedData, 512);
@@ -430,11 +463,11 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
         ippsMulC_32f_I(20.0, LogMagData, 512);
 
         if (m_2ndLOisHS ^ m_1stLOisHS) {
-            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot2[0],   128);
-            ippsFlip_32f(&LogMagData[384], &myStatus->RFFreqPlot2[128], 128);
+            ippsFlip_32f(&LogMagData[0],   &myStatus->RFFreqPlot2[0],  64);
+            ippsFlip_32f(&LogMagData[448], &myStatus->RFFreqPlot2[64], 64);
         } else {
-            memcpy(&myStatus->RFFreqPlot2[0],   &LogMagData[384], 128 * sizeof(Ipp32f)); // last 128 (negative freqs)
-            memcpy(&myStatus->RFFreqPlot2[128], &LogMagData[0],   128 * sizeof(Ipp32f)); // first 128 (positive freqs)
+            memcpy(&myStatus->RFFreqPlot2[0],  &LogMagData[448], 64 * sizeof(Ipp32f)); // 64 negative-freq bins nearest DC
+            memcpy(&myStatus->RFFreqPlot2[64], &LogMagData[0],   64 * sizeof(Ipp32f)); // DC + 63 positive-freq bins
         }
       
         return true;
@@ -472,35 +505,66 @@ void CRadio::DoRXDSP(bool bypassALC) // 2000 bytes = 250 I/Q = 256 audio
 
 }
 
+void CRadio::ProcessMagField(char* CompassData) // 12 bytes to 3-D vector
+{
+    uint16_t val;
+    for (int i = 0; i < 12; i++) CompassData[i] -= 0x20; // Remove offset
+    mMagField[0] = ((CompassData[1] << 12) | (CompassData[2] << 6) | CompassData[3]) - 32768;
+    mMagField[1] = ((CompassData[5] << 12) | (CompassData[6] << 6) | CompassData[7]) - 32768;
+    mMagField[2] = ((CompassData[9] << 12) | (CompassData[10] << 6) | CompassData[11]) - 32768;
+    for(int i=0; i<3; i++) corrMagField[i] = mMagField[i] - ofsMagField[i];
+    float magmf = sqrt(corrMagField[0] * corrMagField[0] + corrMagField[1] * corrMagField[1] + corrMagField[2] * corrMagField[2]);
+    //sprintf_s(dbgText, "%.0f %.0f %.0f", corrMagField[0], corrMagField[1], corrMagField[2]);
+    double bearing = mCompass->GetMagneticBearing(corrMagField[0], -1.0f * corrMagField[1], -1.0f * corrMagField[2]); // Z axis down, not up
+    sprintf_s(dbgText, "%.0f %.2f", magmf, bearing); 
+}
+
 void CRadio::RXDataLoop()
 {
     DWORD WriteData4[16];
     char writeData[64];
+    char CompassData[16];
     char readData[256];
     DWORD bytesWritten = 0;
     DWORD bytesToWrite = 4;
     bool bypassALC = true;
     int ALCCounter = 0;
     writeData[0] = 'd'; // Let's make 'd' send 256 x 64 bytes ADC data, so this is 42 ms
+    writeData[1] = 'c'; // Add compass request on demand
 
     WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); // queue up 84 ms initially
     bool OKtoProcess = false;
     while (RX_MODE == myStatus->mode) // Continue until mode changes
     {
-        WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); //add'l 42 ms
+        if (mNewCompassRequest)
+        {
+            WriteFile(hSerial, writeData, 2, &bytesWritten, NULL); //add'l 42 ms + compass
+            mNewCompassRequest = false;
+        }
+        else 
+            WriteFile(hSerial, writeData, 1, &bytesWritten, NULL); //add'l 42 ms
+
         for (int k = 0; k < 64; k++)
         {
-            //ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
-            //if(readData[0] != 's')
-            //{
-            //    ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
-            //    int z = 0;
-            //}
+ /*           ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
+            if(readData[0] != 's')
+            {
+                ReadFile(hSerial, readData, 4, &bytesWritten, NULL);
+                int z = 0;
+            }*/
 
             ReadFile(hSerial, readData, 256, &bytesWritten, NULL);
             if (bytesWritten < 256)
-                    int h = 0;
-                OKtoProcess = ProcessRawToIQ(readData);
+                    int h = 0; // Indicates error...
+
+			if (readData[0] == 'x') // We found compass data. Should always be at start of block
+			{
+				memcpy(CompassData, readData, 12);
+                memmove(readData, &readData[12], 244); //move to start
+                ProcessMagField(CompassData);
+                ReadFile(hSerial, &readData[244], 12, &bytesWritten, NULL); // Grab missing 12 bytes
+            }
+            OKtoProcess = ProcessRawToIQ(readData);
             
             if (OKtoProcess) DoRXDSP(bypassALC); // every 250 I/Q
         }
@@ -514,12 +578,12 @@ void CRadio::RXDataLoop()
         else bypassALC = false;
     }
     //Final xfer
- /*   for (int k = 0; k < 64; k++)
+    for (int k = 0; k < 64; k++)
     {
         ReadFile(hSerial, readData, 256, &bytesWritten, NULL);
         if (bytesWritten < 256)
-            int h = 0;
-    }*/
+            break;
+    }
 }
 
 DWORD GetBytesAvailable(HANDLE hComm) {
@@ -571,13 +635,13 @@ int CRadio::SetFreq(float freqMHz)
     float FirstLO = FirstLO1M2Steps * 1.2f;
     FirstLO1M2Steps *= 12;
     float SecondLOTarget = fabs(freqMHz - FirstLO);
-    SecondLOTarget = (m_2ndLOisHS)? (SecondLOTarget - 0.01425) : (SecondLOTarget + 0.01425); // 14.25 kHz offset
+   // SecondLOTarget = (m_2ndLOisHS)? (SecondLOTarget - 0.01425) : (SecondLOTarget + 0.01425); // 14.25 kHz offset
 
-    float ratio = FirstLO / SecondLOTarget;
+    float ratio = FirstLO / ((m_2ndLOisHS) ? (SecondLOTarget - 0.01425) : (SecondLOTarget + 0.01425));
     Idiv = (int)ratio;
     Fdiv = (int)roundf((ratio - Idiv) * 64.0f);
     if (Fdiv >= 64) { Idiv++; Fdiv = 0; }
-
+    float SecondLOActual = FirstLO / (Idiv + Fdiv / 64.0f);
 
 //    Idiv += 1;
     LOfreq = freqMHz;
@@ -586,7 +650,7 @@ int CRadio::SetFreq(float freqMHz)
     writeData[2] = 0x20 + (Idiv & 0x3F);
     writeData[3] = 0x20 + (Fdiv & 0x3F);
     WriteFile(hSerial, writeData, 4, &bytesWritten, NULL); // Set frequency
-    Sleep(32);
+    //std::this_thread::sleep_for(std::chrono::milliseconds(32));
 
     if (m_currentLO1 != FirstLO1M2Steps)
     {
@@ -596,10 +660,11 @@ int CRadio::SetFreq(float freqMHz)
         writeData[2] = 0x20 + (FirstLO1M2Steps & 0x3F);
         writeData[3] = 0x20 + (Fdiv & 0x3F);
         WriteFile(hSerial, writeData, 4, &bytesWritten, NULL); // Set frequency
-        Sleep(32); 
+        //std::this_thread::sleep_for(std::chrono::milliseconds(32));
     }
-
-//    TunerFreq = (m_1stLOisHS) ? -19.0 / 128 : 19.0 / 128;
+    
+    TunerFreq = fabs(SecondLOActual - SecondLOTarget) / 0.096;//96 kHz sample rate
+    //ToDo: Set Tuner freq
     return bytesWritten;
 }
 
@@ -609,14 +674,13 @@ int CRadio::Connect()
     for (int i = 0; i < 64; i++) DummyBuffer[i] = 0.0;// 0.5 * cos(IPP_2PI * i / 64.0);
 
     sprintf_s(dbgText, "Connecting");
-    FILE* f;
-    fopen_s(&f, "comport.txt", "r");
-    int port = 3;
-    fscanf_s(f, "%d", &port);
-//    fscanf_s(f, "%d", &AudioInputChannels);
-//    fscanf_s(f, "%f", &LOfreq);
-    fclose(f);
-    
+    LoadConfig();
+    ofsMagField[0] = 0.5f * (mCompassExtrema.XMin[0] + mCompassExtrema.XMax[0]);
+    ofsMagField[1] = 0.5f * (mCompassExtrema.YMin[1] + mCompassExtrema.YMax[1]);
+    ofsMagField[2] = 0.5f * (mCompassExtrema.ZMin[2] + mCompassExtrema.ZMax[2]);
+    int port = m_comPort;
+    mCompass = new CCompass(mLatitude, mLongitude, mYaw, mPitch, mRoll);
+    if (mDeclination != 0.0) mCompass->SetDeclination(mDeclination);
     //debug
     DWORD WriteData4[16];
     char writeData[64];
@@ -718,7 +782,7 @@ int CRadio::Connect()
     SetFreq(LOfreq); //DEBUG: SET FREQ FROM FILE
     myStatus->RXFreq = LOfreq;
     myStatus->phaseDelta = -1.0;
-    Sleep(16);
+    std::this_thread::sleep_for(std::chrono::milliseconds(16));
 
     //writeData[0] = 'C';
     //writeData[1] = 0x20 + RelaySettings; 
@@ -748,4 +812,75 @@ SkipComPortStuff:
 //    sprintf_s(dbgText, "stop data");
 
  	return 1;
+}
+
+void CRadio::LoadConfig()
+{
+    FILE* f;
+    if (fopen_s(&f, "config.json", "r") != 0)
+        return;
+
+    char buf[2048] = {};
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    auto after = [&](const char* key) -> const char* {
+        const char* p = strstr(buf, key);
+        if (!p) return nullptr;
+        p = strchr(p + strlen(key), ':');
+        return p ? p + 1 : nullptr;
+    };
+
+    const char* p;
+    p = after("\"comPort\"");            if (p) sscanf_s(p, " %d", &m_comPort);
+    p = after("\"phaseOffset\"");        if (p) sscanf_s(p, " %f", &mPhaseOffset);
+    p = after("\"ch2Scale\"");           if (p) sscanf_s(p, " %f", &mCH2Scale);
+    p = after("\"compassPosition\"");
+    if (p) sscanf_s(p, " [%f , %f , %f]",
+                    &mCompassPosition[0], &mCompassPosition[1], &mCompassPosition[2]);
+
+    p = after("\"xMin\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.XMin[0], &mCompassExtrema.XMin[1], &mCompassExtrema.XMin[2]);
+    p = after("\"xMax\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.XMax[0], &mCompassExtrema.XMax[1], &mCompassExtrema.XMax[2]);
+    p = after("\"yMin\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.YMin[0], &mCompassExtrema.YMin[1], &mCompassExtrema.YMin[2]);
+    p = after("\"yMax\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.YMax[0], &mCompassExtrema.YMax[1], &mCompassExtrema.YMax[2]);
+    p = after("\"zMin\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.ZMin[0], &mCompassExtrema.ZMin[1], &mCompassExtrema.ZMin[2]);
+    p = after("\"zMax\"");  if (p) sscanf_s(p, " [%d , %d , %d]", &mCompassExtrema.ZMax[0], &mCompassExtrema.ZMax[1], &mCompassExtrema.ZMax[2]);
+
+    p = after("\"latitude\"");   if (p) sscanf_s(p, " %f", &mLatitude);
+    p = after("\"longitude\"");  if (p) sscanf_s(p, " %f", &mLongitude);
+    p = after("\"pitch\"");      if (p) sscanf_s(p, " %f", &mPitch);
+    p = after("\"roll\"");       if (p) sscanf_s(p, " %f", &mRoll);
+    p = after("\"yaw\"");         if (p) sscanf_s(p, " %f", &mYaw);
+    p = after("\"declination\""); if (p) sscanf_s(p, " %f", &mDeclination);
+}
+
+void CRadio::SaveConfig()
+{
+    FILE* f;
+    if (fopen_s(&f, "config.json", "w") != 0)
+        return;
+
+    fprintf(f, "{\n");
+    fprintf(f, "    \"comPort\": %d,\n", m_comPort);
+    fprintf(f, "    \"phaseOffset\": %g,\n", mPhaseOffset);
+    fprintf(f, "    \"ch2Scale\": %g,\n", mCH2Scale);
+    fprintf(f, "    \"compassPosition\": [%g, %g, %g],\n",
+            mCompassPosition[0], mCompassPosition[1], mCompassPosition[2]);
+    fprintf(f, "    \"compassExtrema\": {\n");
+    fprintf(f, "        \"xMin\": [%d, %d, %d],\n", mCompassExtrema.XMin[0], mCompassExtrema.XMin[1], mCompassExtrema.XMin[2]);
+    fprintf(f, "        \"xMax\": [%d, %d, %d],\n", mCompassExtrema.XMax[0], mCompassExtrema.XMax[1], mCompassExtrema.XMax[2]);
+    fprintf(f, "        \"yMin\": [%d, %d, %d],\n", mCompassExtrema.YMin[0], mCompassExtrema.YMin[1], mCompassExtrema.YMin[2]);
+    fprintf(f, "        \"yMax\": [%d, %d, %d],\n", mCompassExtrema.YMax[0], mCompassExtrema.YMax[1], mCompassExtrema.YMax[2]);
+    fprintf(f, "        \"zMin\": [%d, %d, %d],\n", mCompassExtrema.ZMin[0], mCompassExtrema.ZMin[1], mCompassExtrema.ZMin[2]);
+    fprintf(f, "        \"zMax\": [%d, %d, %d]\n",  mCompassExtrema.ZMax[0], mCompassExtrema.ZMax[1], mCompassExtrema.ZMax[2]);
+    fprintf(f, "    },\n");
+    fprintf(f, "    \"latitude\": %g,\n",  mLatitude);
+    fprintf(f, "    \"longitude\": %g,\n", mLongitude);
+    fprintf(f, "    \"pitch\": %g,\n",     mPitch);
+    fprintf(f, "    \"roll\": %g,\n",      mRoll);
+    fprintf(f, "    \"yaw\": %g,\n",        mYaw);
+    fprintf(f, "    \"declination\": %g\n", mDeclination);
+    fprintf(f, "}\n");
+    fclose(f);
 }
