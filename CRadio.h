@@ -50,7 +50,7 @@ struct RadioStatus {
 	int mode;		//0 for standby, 1 for receive?
 	float RFFreqPlot[128];
 	float RFFreqPlot2[128];
-	float antennaSpacing;   // meters
+	float mSpacing;         // meters
 	float angleOfArrival;   // degrees
 };
 
@@ -118,6 +118,7 @@ public:
 	int m_currentLO1;
 	bool mNewCompassRequest;
 	bool mNewCompassCalRequest;
+	double mCompassBearing;
 
 	Ipp32f* audioInBuf;
 	Ipp32f* audioOutBuf;

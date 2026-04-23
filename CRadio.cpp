@@ -117,7 +117,7 @@ void InitStatus(RadioStatus* s)
     s->RXFreq = 146.56500;
     for (int i = 0; i < 128; i++) s->RFFreqPlot[i] = -20.0;
     for (int i = 0; i < 128; i++) s->RFFreqPlot2[i] = -20.0;
-    s->antennaSpacing = 0.5f;
+    s->mSpacing = 0.5f;
     s->angleOfArrival = 0.0f;
  
 }
@@ -136,6 +136,7 @@ CRadio::CRadio()
     mRoll = 0.0f;
     mYaw = 0.0f;
     mDeclination = 0.0f;
+    mCompassBearing = 0.0;
 
     audioInBuf = new Ipp32f[16384];
     audioOutBuf = new Ipp32f[16384];
@@ -434,7 +435,7 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
         if (m_2ndLOisHS ^ m_1stLOisHS) myStatus->phaseDelta *= -1.0;
 
         // Now compute angle of arrival from phase difference, based on antenna spacing
-		float sinArg = myStatus->phaseDelta / (360.0f * myStatus->antennaSpacing);
+		float sinArg = myStatus->phaseDelta / (360.0f * myStatus->mSpacing);
 		if (sinArg > 1.0f) sinArg = 1.0f;
 		else if (sinArg < -1.0f) sinArg = -1.0f;
 		myStatus->angleOfArrival = asinf(sinArg) * (180.0f / IPP_PI);
@@ -515,8 +516,8 @@ void CRadio::ProcessMagField(char* CompassData) // 12 bytes to 3-D vector
     for(int i=0; i<3; i++) corrMagField[i] = mMagField[i] - ofsMagField[i];
     float magmf = sqrt(corrMagField[0] * corrMagField[0] + corrMagField[1] * corrMagField[1] + corrMagField[2] * corrMagField[2]);
     //sprintf_s(dbgText, "%.0f %.0f %.0f", corrMagField[0], corrMagField[1], corrMagField[2]);
-    double bearing = mCompass->GetMagneticBearing(corrMagField[0], -1.0f * corrMagField[1], -1.0f * corrMagField[2]); // Z axis down, not up
-    sprintf_s(dbgText, "%.0f %.2f", magmf, bearing); 
+    mCompassBearing = mCompass->GetMagneticBearing(corrMagField[0], -1.0f * corrMagField[1], -1.0f * corrMagField[2]); // Z axis down, not up
+    sprintf_s(dbgText, "%.0f %.2f", magmf, mCompassBearing);
 }
 
 void CRadio::RXDataLoop()
@@ -853,6 +854,7 @@ void CRadio::LoadConfig()
     p = after("\"roll\"");       if (p) sscanf_s(p, " %f", &mRoll);
     p = after("\"yaw\"");         if (p) sscanf_s(p, " %f", &mYaw);
     p = after("\"declination\""); if (p) sscanf_s(p, " %f", &mDeclination);
+    p = after("\"spacing\"");     if (p) sscanf_s(p, " %f", &myStatus->mSpacing);
 }
 
 void CRadio::SaveConfig()
@@ -880,7 +882,8 @@ void CRadio::SaveConfig()
     fprintf(f, "    \"pitch\": %g,\n",     mPitch);
     fprintf(f, "    \"roll\": %g,\n",      mRoll);
     fprintf(f, "    \"yaw\": %g,\n",        mYaw);
-    fprintf(f, "    \"declination\": %g\n", mDeclination);
+    fprintf(f, "    \"declination\": %g,\n", mDeclination);
+    fprintf(f, "    \"spacing\": %g\n",     myStatus->mSpacing);
     fprintf(f, "}\n");
     fclose(f);
 }

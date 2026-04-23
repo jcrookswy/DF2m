@@ -117,6 +117,8 @@ enum {
     ID_COMPASS_ZMIN,
     ID_COMPASS_ZMAX,
     ID_COMPASS_SET_POSITION,
+    ID_RFALIGN_ZERO,
+    ID_RFALIGN_FLIP,
 };
 ///////////////////////////////////////////////////////////////////////////////
 /// Class MyFrame1
@@ -173,6 +175,8 @@ public:
     void OnMenuSaveConfig(wxCommandEvent& event);
     void OnMenuCompassAxis(wxCommandEvent& event);
     void OnMenuSetPosition(wxCommandEvent& event);
+    void OnRFAlignZero(wxCommandEvent& event);
+    void OnRFAlignFlip(wxCommandEvent& event);
     void OnPaint(wxPaintEvent& event);
     void OnTimer(wxTimerEvent& event);
     void UpdateDebugText(char* text);
@@ -195,6 +199,8 @@ EVT_MENU(ID_COMPASS_YMAX,     MyFrame::OnMenuCompassAxis)
 EVT_MENU(ID_COMPASS_ZMIN,     MyFrame::OnMenuCompassAxis)
 EVT_MENU(ID_COMPASS_ZMAX,         MyFrame::OnMenuCompassAxis)
 EVT_MENU(ID_COMPASS_SET_POSITION, MyFrame::OnMenuSetPosition)
+EVT_MENU(ID_RFALIGN_ZERO,         MyFrame::OnRFAlignZero)
+EVT_MENU(ID_RFALIGN_FLIP,         MyFrame::OnRFAlignFlip)
 wxEND_EVENT_TABLE()
 
 
