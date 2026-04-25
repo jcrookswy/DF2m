@@ -119,6 +119,7 @@ enum {
     ID_COMPASS_SET_POSITION,
     ID_RFALIGN_ZERO,
     ID_RFALIGN_FLIP,
+    ID_DEVICE_MUTE_AUDIO,
 };
 ///////////////////////////////////////////////////////////////////////////////
 /// Class MyFrame1
@@ -177,6 +178,7 @@ public:
     void OnMenuSetPosition(wxCommandEvent& event);
     void OnRFAlignZero(wxCommandEvent& event);
     void OnRFAlignFlip(wxCommandEvent& event);
+    void OnMenuMuteAudio(wxCommandEvent& event);
     void OnPaint(wxPaintEvent& event);
     void OnTimer(wxTimerEvent& event);
     void UpdateDebugText(char* text);
@@ -201,6 +203,7 @@ EVT_MENU(ID_COMPASS_ZMAX,         MyFrame::OnMenuCompassAxis)
 EVT_MENU(ID_COMPASS_SET_POSITION, MyFrame::OnMenuSetPosition)
 EVT_MENU(ID_RFALIGN_ZERO,         MyFrame::OnRFAlignZero)
 EVT_MENU(ID_RFALIGN_FLIP,         MyFrame::OnRFAlignFlip)
+EVT_MENU(ID_DEVICE_MUTE_AUDIO,    MyFrame::OnMenuMuteAudio)
 wxEND_EVENT_TABLE()
 
 

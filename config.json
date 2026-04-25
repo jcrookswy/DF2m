@@ -1,20 +1,22 @@
 {
     "comPort": 4,
     "phaseOffset": 0,
-    "ch2Scale": -1,
-    "compassPosition": [0, 0, 1],
+    "ch2Scale": 0,
+    "compassPosition": [0, 0, 0],
     "compassExtrema": {
-        "xMin": [-370, 29, -36],
-        "xMax": [614, 16, 22],
-        "yMin": [90, -711, 19],
-        "yMax": [147, 354, 25],
-        "zMin": [113, -119, -528],
-        "zMax": [169, -155, 519]
+        "xMin": [-402, -257, 85],
+        "xMax": [638, -226, -25],
+        "yMin": [84, -673, 144],
+        "yMax": [192, 346, -2],
+        "zMin": [67, -185, -530],
+        "zMax": [143, -145, 506]
     },
     "latitude": 45.8,
     "longitude": -122.5,
     "pitch": 0,
     "roll": -90,
     "yaw": -90,
-    "declination": 14.56
+    "declination": 0,
+    "spacing": 0.9,
+    "phaseFlip": 0
 }

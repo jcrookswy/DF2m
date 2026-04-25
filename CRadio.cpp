@@ -88,6 +88,9 @@ static int patestCallback(const void* inputBuffer, void* outputBuffer,
         //for (int i = 0; i < 8; i++) memcpy(&out[i * 64], DummyBuffer, framesPerBuffer * 8);
         //memset(outputBuffer, 0, framesPerBuffer * 8);
     }
+    if (crp->audioMuted)
+        memset(outputBuffer, 0, framesPerBuffer * crp->AudioOutputChannels * 4);
+
     if (crp->myStatus->mode == 1) // USB RX
     {
 //        int IQSamples = crp->IQWriteAddr - crp->IQReadAddr;
@@ -125,7 +128,7 @@ void InitStatus(RadioStatus* s)
 CRadio::CRadio()
 {
     ippInit();                      // Initialize Intel� IPP library 
-    m_comPort = 3;
+    m_comPort = 4;
     m_1stLOisHS = false;
     m_2ndLOisHS = false;
     m_showAoA = false;
@@ -148,7 +151,8 @@ CRadio::CRadio()
     audioOutWrPtr = 0;
     audioOutRdPtr = 0;
     audioOutStarted = false;
- 
+    audioMuted = false;
+
     memset(audioInBuf, 0, 65536);
     memset(audioOutBuf, 0, 65536);
     connected = false;
@@ -431,8 +435,10 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
             phaseProd.re += Ch2IQFiltered48k[i].re * Ch1IQFiltered48k[i].re + Ch2IQFiltered48k[i].im * Ch1IQFiltered48k[i].im;
             phaseProd.im += Ch2IQFiltered48k[i].im * Ch1IQFiltered48k[i].re - Ch2IQFiltered48k[i].re * Ch1IQFiltered48k[i].im;
         }
-        myStatus->phaseDelta = atan2f(phaseProd.im, phaseProd.re) * (180.0f / IPP_PI);
-        if (m_2ndLOisHS ^ m_1stLOisHS) myStatus->phaseDelta *= -1.0;
+        myStatus->phaseDelta = atan2f(phaseProd.im, phaseProd.re) * (180.0f / IPP_PI) - mPhaseOffset;
+        if (myStatus->phaseDelta >= 180.0f) myStatus->phaseDelta -= 360.0f;
+        if (myStatus->phaseDelta >= 180.0f) myStatus->phaseDelta -= 360.0f;
+        if (m_2ndLOisHS ^ m_1stLOisHS ^ mPhaseFlip) myStatus->phaseDelta *= -1.0;
 
         // Now compute angle of arrival from phase difference, based on antenna spacing
 		float sinArg = myStatus->phaseDelta / (360.0f * myStatus->mSpacing);
@@ -515,9 +521,9 @@ void CRadio::ProcessMagField(char* CompassData) // 12 bytes to 3-D vector
     mMagField[2] = ((CompassData[9] << 12) | (CompassData[10] << 6) | CompassData[11]) - 32768;
     for(int i=0; i<3; i++) corrMagField[i] = mMagField[i] - ofsMagField[i];
     float magmf = sqrt(corrMagField[0] * corrMagField[0] + corrMagField[1] * corrMagField[1] + corrMagField[2] * corrMagField[2]);
-    //sprintf_s(dbgText, "%.0f %.0f %.0f", corrMagField[0], corrMagField[1], corrMagField[2]);
+    sprintf_s(dbgText, "(%d,%d,%d)", mMagField[0], mMagField[1], mMagField[2]);
     mCompassBearing = mCompass->GetMagneticBearing(corrMagField[0], -1.0f * corrMagField[1], -1.0f * corrMagField[2]); // Z axis down, not up
-    sprintf_s(dbgText, "%.0f %.2f", magmf, mCompassBearing);
+//    sprintf_s(dbgText, "%.0f %.2f", magmf, mCompassBearing);
 }
 
 void CRadio::RXDataLoop()
@@ -855,6 +861,7 @@ void CRadio::LoadConfig()
     p = after("\"yaw\"");         if (p) sscanf_s(p, " %f", &mYaw);
     p = after("\"declination\""); if (p) sscanf_s(p, " %f", &mDeclination);
     p = after("\"spacing\"");     if (p) sscanf_s(p, " %f", &myStatus->mSpacing);
+    p = after("\"phaseFlip\"");   if (p) { int v = 0; sscanf_s(p, " %d", &v); mPhaseFlip = (v != 0); }
 }
 
 void CRadio::SaveConfig()
@@ -883,7 +890,8 @@ void CRadio::SaveConfig()
     fprintf(f, "    \"roll\": %g,\n",      mRoll);
     fprintf(f, "    \"yaw\": %g,\n",        mYaw);
     fprintf(f, "    \"declination\": %g,\n", mDeclination);
-    fprintf(f, "    \"spacing\": %g\n",     myStatus->mSpacing);
+    fprintf(f, "    \"spacing\": %g,\n",     myStatus->mSpacing);
+    fprintf(f, "    \"phaseFlip\": %d\n",   mPhaseFlip ? 1 : 0);
     fprintf(f, "}\n");
     fclose(f);
 }

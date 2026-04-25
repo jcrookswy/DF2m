@@ -452,8 +452,8 @@ void BasicDrawPane::render(wxDC& dc)
 MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style) : wxFrame(parent, id, title, pos, size, style)
 {
 
-    this->SetSizeHints(1180, 480, 1180, 480);
-    this->SetTitle(_("AOA DF 2m"));
+    this->SetSizeHints(1180, 490, 1180, 490);
+    this->SetTitle(_("FH146 AOA DF 2m + Compass"));
 
     myRadio = new CRadio();//Do this after frame exists
     g_wsServer = new WebSocketServer(myRadio);
@@ -468,6 +468,11 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     menuFile->Append(ID_FILE_SAVE_CONFIG, _("Save Config\tCtrl+S"));
     menuBar->Append(menuFile, _("File"));
 
+    wxMenu* menuDevice = new wxMenu();
+    menuDevice->Append(ID_COMPASS_SET_POSITION, _("Device Setup..."));
+    menuDevice->AppendCheckItem(ID_DEVICE_MUTE_AUDIO, _("Mute Audio"));
+    menuBar->Append(menuDevice, _("Device"));
+
     wxMenu* menuCompass = new wxMenu();
     menuCompass->Append(ID_COMPASS_XMIN, _("Set MinX"));
     menuCompass->Append(ID_COMPASS_XMAX, _("Set MaxX"));
@@ -475,8 +480,6 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     menuCompass->Append(ID_COMPASS_YMAX, _("Set MaxY"));
     menuCompass->Append(ID_COMPASS_ZMIN, _("Set MinZ"));
     menuCompass->Append(ID_COMPASS_ZMAX, _("Set MaxZ"));
-    menuCompass->AppendSeparator();
-    menuCompass->Append(ID_COMPASS_SET_POSITION, _("Set Position..."));
     menuBar->Append(menuCompass, _("Compass"));
 
     wxMenu* menuRFAlign = new wxMenu();
@@ -516,7 +519,7 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     m_button1->SetFont(bf);
     m_button1->SetBackgroundColour(wxColor(32, 32, 32));
     m_button1->SetForegroundColour(wxColor(255, 255, 128));
-    gSizer1->Add(m_button1, 0, wxALL, 5);
+    gSizer1->Add(m_button1, 0, wxALL, 3);
 
     wxGridSizer* gSizer2;
     gSizer2 = new wxGridSizer(2, 2, 0, 0);
@@ -548,7 +551,7 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
 
 
 
-    gSizer1->Add(gSizer2, 0, wxALL, 5);
+    gSizer1->Add(gSizer2, 0, wxALL, 3);
 
     wxFlexGridSizer* gSizer3;
     gSizer3 = new wxFlexGridSizer(1, 3, 0, 0);
@@ -556,32 +559,37 @@ MyFrame::MyFrame(wxWindow* parent, wxWindowID id, const wxString& title, const w
     gSizer3->SetNonFlexibleGrowMode(wxFLEX_GROWMODE_SPECIFIED);
 
 
-     gSizer1->Add(gSizer3, 0, wxALL, 5);
+     gSizer1->Add(gSizer3, 0, wxALL, 3);
 
     m_LO1HS = new wxCheckBox(this, wxID_ANY, _("1st LO HS"), wxDefaultPosition, wxDefaultSize, 0);
     m_LO1HS->SetFont(bf);
     m_LO1HS->SetForegroundColour(wxColor(255, 255, 128));
-    gSizer1->Add(m_LO1HS, 0, wxALL, 5);
+    gSizer1->Add(m_LO1HS, 0, wxALL, 3);
 
     m_LO2HS = new wxCheckBox(this, wxID_ANY, _("2nd LO HS"), wxDefaultPosition, wxDefaultSize, 0);
     m_LO2HS->SetFont(bf);
     m_LO2HS->SetForegroundColour(wxColor(255, 255, 128));
-    gSizer1->Add(m_LO2HS, 0, wxALL, 5);
+    gSizer1->Add(m_LO2HS, 0, wxALL, 3);
 
     m_RevPol = new wxCheckBox(this, wxID_ANY, _("show AoA"), wxDefaultPosition, wxDefaultSize, 0);
     m_RevPol->SetFont(bf);
     m_RevPol->SetForegroundColour(wxColor(255, 255, 128));
-    gSizer1->Add(m_RevPol, 0, wxALL, 5);
+    gSizer1->Add(m_RevPol, 0, wxALL, 3);
+
+    wxStaticText* m_labelDebug = new wxStaticText(this, wxID_ANY, _("Raw Mag (x, y, z)"));
+    m_labelDebug->SetFont(bf);
+    m_labelDebug->SetForegroundColour(wxColor(255, 255, 128));
+    gSizer1->Add(m_labelDebug, 0, wxALL, 2);
+
+    m_textDebug = new wxTextCtrl(this, wxID_ANY, _("MESSAGES"), wxDefaultPosition, wxSize(180, 40), 0);
+    m_textDebug->SetFont(bf);
+    gSizer1->Add(m_textDebug, 0, wxALL, 2);
 
     m_buttonSaveConfig = new wxButton(this, wxID_ANY, _("Save Config"), wxDefaultPosition, wxSize(180, 40), 0);
     m_buttonSaveConfig->SetFont(bf);
     m_buttonSaveConfig->SetBackgroundColour(wxColor(32, 32, 32));
     m_buttonSaveConfig->SetForegroundColour(wxColor(255, 255, 128));
-    gSizer1->Add(m_buttonSaveConfig, 0, wxALL, 5);
-
-    m_textDebug = new wxTextCtrl(this, wxID_ANY, _("MESSAGES"), wxDefaultPosition, wxSize(180, 40), 0);
-    m_textDebug->SetFont(bf);
-    gSizer1->Add(m_textDebug, 0, wxALL, 2);
+    gSizer1->Add(m_buttonSaveConfig, 0, wxALL, 3);
 
     bSizer1->Add(gSizer1, 1, wxALIGN_TOP, 5);
 
@@ -753,7 +761,7 @@ class PositionDialog : public wxDialog
 {
 public:
     PositionDialog(MyFrame* parent)
-        : wxDialog(parent, wxID_ANY, _("Set Position"),
+        : wxDialog(parent, wxID_ANY, _("Device Setup"),
                    wxDefaultPosition, wxDefaultSize,
                    wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
         , m_radio(parent->myRadio)
@@ -768,6 +776,12 @@ public:
                                   wxString::Format("%.6g", val));
             grid->Add(ctrl, 1, wxEXPAND | wxALL, 4);
         };
+
+        grid->Add(new wxStaticText(this, wxID_ANY, _("COM Port:")),
+                  0, wxALIGN_CENTER_VERTICAL | wxALL, 4);
+        m_comPort = new wxTextCtrl(this, wxID_ANY,
+                                   wxString::Format("%d", m_radio->m_comPort));
+        grid->Add(m_comPort, 1, wxEXPAND | wxALL, 4);
 
         addRow(_("Latitude:"),  m_lat,   m_radio->mLatitude);
         addRow(_("Longitude:"), m_lon,   m_radio->mLongitude);
@@ -790,6 +804,8 @@ public:
 private:
     void OnOK(wxCommandEvent&)
     {
+        long port;
+        if (m_comPort->GetValue().ToLong(&port)) m_radio->m_comPort = (int)port;
         double v;
         if (m_lat->GetValue().ToDouble(&v))   m_radio->mLatitude  = (float)v;
         if (m_lon->GetValue().ToDouble(&v))   m_radio->mLongitude = (float)v;
@@ -802,6 +818,7 @@ private:
     }
 
     CRadio*     m_radio;
+    wxTextCtrl* m_comPort;
     wxTextCtrl* m_lat;
     wxTextCtrl* m_lon;
     wxTextCtrl* m_pitch;
@@ -817,12 +834,20 @@ void MyFrame::OnMenuSetPosition(wxCommandEvent&)
     dlg->Show();
 }
 
-void MyFrame::OnRFAlignZero(wxCommandEvent& event)
+void MyFrame::OnMenuMuteAudio(wxCommandEvent& event)
 {
+    myRadio->audioMuted = event.IsChecked();
+}
+
+void MyFrame::OnRFAlignZero(wxCommandEvent& event) 
+{
+    myRadio->mPhaseOffset = (myRadio->m_2ndLOisHS ^ myRadio->m_1stLOisHS ^ myRadio->mPhaseFlip) ?
+        myRadio->mPhaseOffset - myRadio->myStatus->phaseDelta : myRadio->mPhaseOffset + myRadio->myStatus->phaseDelta;
 }
 
 void MyFrame::OnRFAlignFlip(wxCommandEvent& event)
 {
+    myRadio->mPhaseFlip = !myRadio->mPhaseFlip;
 }
 
 void MyFrame::B6Click(wxCommandEvent& event) // MHz

@@ -98,6 +98,7 @@ public:
 	float ofsMagField[3];
 	float corrMagField[3];
 	float mPhaseOffset;
+	bool mPhaseFlip;
 	float mCH2Scale;
 	float mCompassPosition[3];
 
@@ -199,15 +200,16 @@ public:
 	Ipp8u* pDCRemBufCH1;
 	Ipp8u* pDCRemBufCH2;
 
-	int IQWriteAddr;
+	int IQWriteAddr;   
 	int IQReadAddr;
 
 	int audioInWrPtr;
 	int audioInRdPtr;
 	int audioOutWrPtr;
 	int audioOutRdPtr;
-	char dbgText[16];
+	char dbgText[64];
 	bool audioOutStarted;
+	bool audioMuted;
 
 	WebSocketServer* m_wsServer = nullptr;
 };
