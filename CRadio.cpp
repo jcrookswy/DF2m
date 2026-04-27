@@ -421,11 +421,6 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
             Ch1IQFiltered48k[i] = Ch1IQFiltered[i << 1];
             Ch2IQFiltered48k[i] = Ch2IQFiltered[i << 1];
         }
-            //Calculate phase so we can FM demod
-        ippsAdd_32fc(Ch1IQFiltered48k, Ch2IQFiltered48k, SumIQFiltered, 512);
-        ippsPhase_32fc(SumIQFiltered, IQPhase, 512);
-        //FIR filter data
-        IQDataWrAdr = 0;
 
         // Compute average phase difference between Ch2 and Ch1 using complex conjugate product.
         // Accumulating Ch2*conj(Ch1) then taking atan2 avoids phase-wrap discontinuities.
@@ -439,6 +434,19 @@ bool CRadio::ProcessRawToIQ(char* data) // return true if FIR filter ran and new
         if (myStatus->phaseDelta >= 180.0f) myStatus->phaseDelta -= 360.0f;
         if (myStatus->phaseDelta >= 180.0f) myStatus->phaseDelta -= 360.0f;
         if (m_2ndLOisHS ^ m_1stLOisHS ^ mPhaseFlip) myStatus->phaseDelta *= -1.0;
+
+        //Calculate phase so we can FM demod
+        // Rotate Ch2 by -mPhaseOffset so the sum is coherent (maximum) when phaseDelta == 0
+        {
+            float theta = -mPhaseOffset * (IPP_PI / 180.0f);
+            Ipp32fc rotFactor = { cosf(theta), sinf(theta) };
+            ippsMulC_32fc(Ch2IQFiltered48k, rotFactor, SumIQFiltered, 512);
+            ippsAdd_32fc_I(Ch1IQFiltered48k, SumIQFiltered, 512);
+        }
+        //ippsCopy_32fc(Ch1IQFiltered48k, SumIQFiltered, 512);
+        ippsPhase_32fc(SumIQFiltered, IQPhase, 512);
+        //FIR filter data
+        IQDataWrAdr = 0;
 
         // Now compute angle of arrival from phase difference, based on antenna spacing
 		float sinArg = myStatus->phaseDelta / (360.0f * myStatus->mSpacing);
@@ -496,11 +504,20 @@ void CRadio::DoRXDSP(bool bypassALC) // 2000 bytes = 250 I/Q = 256 audio
  
     for (int i = 1; i < 512; i++) IQFreq[i] = IQPhase[i] - IQPhase[i - 1]; // Hopefully compiler makes this faster
  
+    float thisAudio, maxAudio = 0.0;
     for (int i = 0; i < 512; i++)
     {
         if (IQFreq[i] > IPP_PI) IQFreq[i] -= IPP_2PI;
         if (IQFreq[i] < -IPP_PI) IQFreq[i] += IPP_2PI;
-        IQFreq[i] *= 0.25;  // Reduce volume a bit
+        thisAudio = fabs(IQFreq[i]);
+        if (maxAudio < thisAudio) maxAudio = thisAudio;
+    }
+
+    if (maxAudio > 1.0) // Big phase steps means noise.
+    {
+        maxAudio = 1.0f / maxAudio;
+        for (int i = 0; i < 512; i++)
+            IQFreq[i] *= maxAudio;
     }
 
     ippsFIRSR_32f(IQFreq, RawAudio, 512, pAudioFIRSpec, AudioFIRDL, AudioFIRDL, pAudioFIRBuf);
